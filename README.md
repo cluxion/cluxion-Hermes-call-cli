@@ -25,7 +25,7 @@ uv tool install cluxion-hermes-call-cli
 # 현재 폴더에서 작업 실행 (도구 사용 가능, codex exec 방식)
 hermes-call "이 폴더의 실패하는 테스트를 고쳐줘"
 hermes-call -C ~/project "pagination 버그 고쳐줘"     # 다른 폴더에서 실행
-hermes-call -m "grok-4.3" -C ~/project -p "테스트를 고쳐줘"
+hermes-call -m "grok-4.3" -C ~/project --prompt "테스트를 고쳐줘"
 
 # 파일을 건드리지 않고 질문만
 hermes-call --ask "이 스택 트레이스는 왜 발생해?"
@@ -102,7 +102,7 @@ Requires a working Hermes Agent install with `hermes` on your PATH and a default
 # Run a task in the current folder (tools enabled, like codex exec)
 hermes-call "fix the failing tests in this folder"
 hermes-call -C ~/project "fix the pagination bug"     # run in another folder
-hermes-call -m "grok-4.3" -C ~/project -p "fix the tests"
+hermes-call -m "grok-4.3" -C ~/project --prompt "fix the tests"
 
 # Ask a question without touching files
 hermes-call --ask "why does this stack trace happen?"
@@ -124,7 +124,7 @@ hermes-call doctor
 It runs exactly the prompt you'd type yourself in that folder — same model, tools, and
 `AGENTS.md` rules. The session it creates is deleted after each run (use `--keep-session` to
 keep it). The default mode can modify files (it auto-approves tools, like Hermes' own oneshot
-mode), so use `--ask` or `--sandbox` for prompts you don't fully trust.
+mode), so use `--ask` (answer-only, no tools) or `--sandbox` for prompts you don't fully trust.
 
 `--until-done` appends a completion contract to the prompt. If Hermes ends its answer with
 `TASK_COMPLETE`, the run is complete. If it ends with `WORK_REMAINS: ...`, `hermes-call`

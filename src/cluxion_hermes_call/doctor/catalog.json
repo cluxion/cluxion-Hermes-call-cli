@@ -1,0 +1,762 @@
+[
+  {
+    "check_id": "hermes_on_path",
+    "category": "hermes_contract",
+    "severity": "critical",
+    "what_it_checks": "hermes binary is resolvable on PATH",
+    "failure_symptom": "All tool/subprocess calls to the host fail immediately",
+    "likely_causes": [
+      "Hermes not installed",
+      "PATH not exported in this shell/agent env"
+    ],
+    "fix_steps": [
+      "Run: which hermes",
+      "If missing, install/repair Hermes Agent and ensure its bin dir is on PATH",
+      "For agents, confirm the spawned shell inherits PATH"
+    ],
+    "change_robust": "Uses shutil.which at runtime — independent of any hardcoded path",
+    "detection_method": "shutil.which(ctx.hermes_bin) is not None"
+  },
+  {
+    "check_id": "hermes_version",
+    "category": "hermes_contract",
+    "severity": "high",
+    "what_it_checks": "hermes --version is parseable (host is a known-good build)",
+    "failure_symptom": "Unknown host version; contract assumptions may not hold",
+    "likely_causes": [
+      "Hermes build does not print the expected banner",
+      "Broken install"
+    ],
+    "fix_steps": [
+      "Run: hermes --version",
+      "Reinstall Hermes if the version banner is missing"
+    ],
+    "change_robust": "Parses live --version output, not a pinned constant",
+    "detection_method": "regex 'Hermes Agent v<ver>' matches `hermes --version`"
+  },
+  {
+    "check_id": "hermes_oneshot_flag",
+    "category": "hermes_contract",
+    "severity": "critical",
+    "what_it_checks": "host advertises -z/--oneshot (the non-interactive entry every plugin relies on)",
+    "failure_symptom": "Plugin/CLI falls into interactive mode or errors when invoking the host",
+    "likely_causes": [
+      "A Hermes update renamed/removed the oneshot flag"
+    ],
+    "fix_steps": [
+      "Run: hermes --help | grep -- -z",
+      "If absent, pin to a compatible Hermes version or update the plugin to the new flag"
+    ],
+    "change_robust": "Greps live --help output each run — detects a Hermes update that breaks the contract",
+    "detection_method": "'-z' and '--oneshot' present in `hermes --help`"
+  },
+  {
+    "check_id": "entry_point_registered",
+    "category": "registration",
+    "severity": "critical",
+    "what_it_checks": "this plugin's entry point is registered under hermes_agent.plugins and import+register() works",
+    "failure_symptom": "Plugin not loaded by Hermes; its tools/subcommand are absent",
+    "likely_causes": [
+      "pip install incomplete",
+      "entry point metadata missing",
+      "register() import error"
+    ],
+    "fix_steps": [
+      "Run: python -c \"import importlib.metadata as m; print([e.value for e in m.entry_points(group='hermes_agent.plugins') if 'cluxion-hermes-call-cli' in e.name.lower()])\"",
+      "Reinstall: pip install --force-reinstall cluxion-hermes-call-cli",
+      "Confirm the entry module imports and exposes a callable register"
+    ],
+    "change_robust": "Reads live importlib.metadata.entry_points(), not a config file",
+    "detection_method": "entry_points(group='hermes_agent.plugins') contains this dist and register is callable"
+  },
+  {
+    "check_id": "subcommand_valid",
+    "category": "contract_drift",
+    "severity": "high",
+    "what_it_checks": "`hermes call` subcommand is advertised and returns help (exit 0)",
+    "failure_symptom": "Delegating via the host subcommand path fails with 'invalid choice'",
+    "likely_causes": [
+      "register_cli_command not called",
+      "Hermes CLI registration API changed"
+    ],
+    "fix_steps": [
+      "Run: hermes call --help",
+      "If 'invalid choice', reinstall cluxion-hermes-call-cli and confirm register_cli_command is used"
+    ],
+    "change_robust": "Runs live `hermes call --help` — catches host CLI-registration drift",
+    "detection_method": "`hermes call --help` exits 0"
+  },
+  {
+    "check_id": "install_integrity",
+    "category": "install",
+    "severity": "high",
+    "what_it_checks": "installed distribution version equals the package __version__",
+    "failure_symptom": "Stale or mismatched install; fixes/behaviors may not be the deployed ones",
+    "likely_causes": [
+      "Partial upgrade",
+      "multiple installs shadowing each other"
+    ],
+    "fix_steps": [
+      "Run: pip show cluxion-hermes-call-cli",
+      "Force a clean reinstall: pip install --force-reinstall cluxion-hermes-call-cli"
+    ],
+    "change_robust": "Compares live importlib.metadata.version() to __version__ — no hardcoding",
+    "detection_method": "importlib.metadata.version('cluxion-hermes-call-cli') == __version__"
+  },
+  {
+    "check_id": "no_p_short_flag",
+    "category": "override_collision",
+    "severity": "critical",
+    "what_it_checks": "the plugin does NOT register a '-p' short flag (it collides with the Hermes host global -p/--profile)",
+    "failure_symptom": "`hermes call -p \"text\"` errors: Profile 'text' does not exist (exit 1)",
+    "likely_causes": [
+      "plugin re-registered -p as prompt alias, shadowing host -p/--profile"
+    ],
+    "fix_steps": [
+      "Ensure cli.py registers only --prompt (long form), not -p",
+      "Use the positional PROMPT or --prompt through the host"
+    ],
+    "change_robust": "Inspects the argparse option strings at runtime; independent of host version",
+    "detection_method": "'-p' not in the call parser's option strings"
+  },
+  {
+    "check_id": "empty_prompt_rejected",
+    "category": "handler",
+    "severity": "high",
+    "what_it_checks": "empty/whitespace prompt is rejected (never forwarded as `hermes -z \"\"` → interactive TUI block)",
+    "failure_symptom": "Process blocks on a TTY waiting for interactive input; agent timeout",
+    "likely_causes": [
+      "_resolve_prompt only rejected None",
+      "child stdin not DEVNULL"
+    ],
+    "fix_steps": [
+      "_resolve_prompt must error on not prompt.strip()",
+      "Pass stdin=subprocess.DEVNULL to every hermes Popen"
+    ],
+    "change_robust": "Calls the resolver with '' and asserts it errors; checks Popen kwargs",
+    "detection_method": "_resolve_prompt('') raises SystemExit and core Popen uses stdin=DEVNULL"
+  },
+  {
+    "check_id": "ask_mode_honesty",
+    "category": "ask_mode",
+    "severity": "medium",
+    "what_it_checks": "--ask injects the no-tools honesty preface so the model never claims tool actions it cannot do",
+    "failure_symptom": "--ask returns confident FALSE success (e.g. 'file created') though nothing happened",
+    "likely_causes": [
+      "ASK_MODE_PREFACE not prepended in ask mode"
+    ],
+    "fix_steps": [
+      "Prepend ASK_MODE_PREFACE to the prompt when options.ask is true",
+      "Document --ask as answer-only/no-tools in help + README"
+    ],
+    "change_robust": "Asserts the preface constant is prepended on the ask path",
+    "detection_method": "ASK_MODE_PREFACE present and applied when ask=True"
+  },
+  {
+    "check_id": "doctor_gc_magic_safe",
+    "category": "handler",
+    "severity": "medium",
+    "what_it_checks": "'doctor'/'gc' positional only triggers magic subcommands for a bare invocation (no prompt-shaping flags)",
+    "failure_symptom": "`hermes call --ask doctor` runs the doctor instead of asking the model",
+    "likely_causes": [
+      "magic routing fired on args.prompt regardless of other flags"
+    ],
+    "fix_steps": [
+      "Gate doctor/gc routing on absence of ask/prompt_alias/toolsets/json/until_done/sandbox"
+    ],
+    "change_robust": "Exercises the routing with --ask present and asserts the model path is taken",
+    "detection_method": "magic words gated by no-other-flag condition"
+  },
+  {
+    "check_id": "hermes_binary_not_found",
+    "category": "install",
+    "severity": "critical",
+    "what_it_checks": "Hermes binary is available on PATH or at the specified path",
+    "failure_symptom": "OSError: failed to start hermes; subprocess.Popen raises 'No such file or directory'; hermes-call answer is empty",
+    "likely_causes": [
+      "Hermes not installed",
+      "Hermes installed but not on user's PATH",
+      "User specified --hermes-bin path that does not exist",
+      "PATH environment variable corrupted or not exported to subprocess",
+      "Shell configuration not loading PATH correctly"
+    ],
+    "fix_steps": [
+      "Verify hermes is installed: run 'which hermes' or 'hermes --version'",
+      "If not found, install/reinstall Hermes Agent from https://hermes-agent.nousresearch.com",
+      "Verify PATH includes Hermes location: echo $PATH | grep -i hermes or $HOME/.local/bin",
+      "If using custom hermes_bin path, ensure path is absolute and file exists: ls -l /path/to/hermes",
+      "Test subprocess can see hermes by running in subshell: bash -c 'which hermes'"
+    ],
+    "change_robust": "The check _resolve_binary() inspects PATH at runtime via shutil.which(), so it adapts to PATH changes between Hermes updates; robust to env differences",
+    "detection_method": "shutil.which('hermes') or check Path(hermes_bin).exists() if hermes_bin contains / or \\"
+  },
+  {
+    "check_id": "hermes_help_flags_missing",
+    "category": "native_backend",
+    "severity": "critical",
+    "what_it_checks": "Hermes --help output advertises -z/--oneshot and -t/--toolsets flags",
+    "failure_symptom": "hermes-call exits with returncode 2 when building command; subprocess returns unrecognized argument error; answer is empty",
+    "likely_causes": [
+      "Hermes version is too old (does not have -z/--oneshot flag)",
+      "Hermes was downgraded after cluxion-hermes-call-cli was installed",
+      "Hermes help output changed format or moved flags to subcommands",
+      "hermes binary is not the real Hermes Agent (symlink to wrong binary, wrapper script, mock)"
+    ],
+    "fix_steps": [
+      "Check Hermes version: hermes --version (should be >= 0.14.0 for -z, >= 0.12.0 for -t)",
+      "View actual help: hermes --help | grep -E '(-z|-t|oneshot|toolsets)'",
+      "If missing, upgrade Hermes: hermes self-upgrade or reinstall",
+      "If symlink: verify target is real Hermes: ls -la $(which hermes) && file $(which hermes)",
+      "Run doctor again to confirm: hermes-call doctor"
+    ],
+    "change_robust": "Search is substring-based (not regex fragile), checks for both short and long flags; detects help format shifts; robust to minor help text rewording",
+    "detection_method": "subprocess hermes --help; search for '-z' and '--oneshot' and '-t' and '--toolsets' in combined stdout+stderr"
+  },
+  {
+    "check_id": "default_model_not_configured",
+    "category": "config",
+    "severity": "critical",
+    "what_it_checks": "Hermes has a default model configured in ~/.hermes/config.yaml or $HERMES_HOME/config.yaml",
+    "failure_symptom": "hermes-call answer field is empty or 'no final response was produced'; Hermes logs 'no default model'; user can still call with -m override",
+    "likely_causes": [
+      "User ran 'hermes logout' or 'hermes auth-reset'",
+      "Hermes config.yaml was manually edited and model.default removed",
+      "config.yaml file is corrupted (invalid YAML)",
+      "User is running in fresh container/VM with no Hermes setup",
+      "$HERMES_HOME env var points to non-existent or wrong config"
+    ],
+    "fix_steps": [
+      "Check config exists: test -f ~/.hermes/config.yaml && echo 'found' || echo 'missing'",
+      "View current config: cat ~/.hermes/config.yaml | grep -A 2 'model:'",
+      "Set default model: hermes config model.default grok-4.3 (or other available model)",
+      "Verify auth is valid: hermes auth list (should show credentials, not 'not authenticated')",
+      "If $HERMES_HOME is set, verify it: echo $HERMES_HOME && ls $HERMES_HOME/config.yaml",
+      "Run doctor again: hermes-call doctor (should show default model in epilog)"
+    ],
+    "change_robust": "Parser reads YAML indentation-aware, handles quoted/unquoted values, null checks; detects when model block exists but is empty; fails gracefully with 'model block not found' reason",
+    "detection_method": "Read config.yaml and parse model.default and model.provider fields using config._parse_model_block(); verify model value is not empty"
+  },
+  {
+    "check_id": "sessions_command_not_available",
+    "category": "native_backend",
+    "severity": "high",
+    "what_it_checks": "Hermes sessions subcommand and list/export/delete actions are available",
+    "failure_symptom": "hermes-call cannot capture or cleanup sessions; answer is empty; session IDs are not parsed; session cleanup is skipped with reason 'after_list_failed'",
+    "likely_causes": [
+      "Hermes version too old (sessions command added in v0.12.0)",
+      "Hermes downgraded after install",
+      "sessions subcommand was removed or renamed in a major Hermes update",
+      "User has a custom hermes wrapper that strips the sessions command"
+    ],
+    "fix_steps": [
+      "Check Hermes version: hermes --version (should be >= 0.12.0)",
+      "Verify sessions command exists: hermes sessions --help | head -5",
+      "View available actions: hermes sessions --help | grep -E 'list|export|delete'",
+      "If missing, upgrade Hermes: hermes self-upgrade",
+      "Verify hermes binary is not a wrapper: type hermes && file $(which hermes)"
+    ],
+    "change_robust": "Uses word-boundary regex to detect command names, not string contains; resilient to help text rewording; detects missing individual actions (list vs export vs delete)",
+    "detection_method": "subprocess hermes sessions --help; search for word boundaries around 'list', 'export', 'delete' using _contains_word() regex"
+  },
+  {
+    "check_id": "sessions_list_parse_failure",
+    "category": "hermes_contract",
+    "severity": "high",
+    "what_it_checks": "Session IDs can be parsed from 'hermes sessions list' output using the documented regex pattern",
+    "failure_symptom": "cleanup_created_session returns 'no_new_session'; sessions are not cleaned up; answer includes 'session cleanup skipped'; hermes-call cannot detect its own session",
+    "likely_causes": [
+      "Hermes sessions list table format changed (moved ID position or added columns)",
+      "Session IDs format changed (no longer 8dig_6dig_hex)",
+      "Hermes sessions list returns JSONL or CSV instead of human table",
+      "Output encoding issue (session IDs are valid but regex fails to match)",
+      "User's Hermes has custom output formatting via environment variable"
+    ],
+    "fix_steps": [
+      "Run actual command: hermes sessions list --source cli --limit 20",
+      "Check ID format: hermes sessions list --source cli | grep -oE '[0-9]{8}_[0-9]{6}_[0-9a-f]{8,}'",
+      "If no output, check there are sessions: hermes sessions list | head",
+      "If format changed, report to cluxion-hermes-call-cli: 'hermes sessions list format changed, IDs now...'",
+      "Run doctor: hermes-call doctor (output shows parsed count or 'no visible cli sessions')"
+    ],
+    "change_robust": "Regex pattern is source-verified against actual Hermes output; handles case where no sessions exist (returns true 'no visible cli sessions'); detects parsing failure directly",
+    "detection_method": "Run 'hermes sessions list --source cli --limit 20'; extract session IDs with SESSION_ID_AT_EOL_RE (pattern: \\d{8}_\\d{6}_[0-9a-fA-F]+); verify at least one ID or 'No sessions found' message"
+  },
+  {
+    "check_id": "jobs_root_not_writable",
+    "category": "resource",
+    "severity": "high",
+    "what_it_checks": "Job sandbox root directory (~/.cluxion_hermes/jobs) is writable and round-trip file I/O succeeds",
+    "failure_symptom": "hermes-call --sandbox fails with 'sandbox cleanup skipped'; job_dir is not None but job_deleted is False; job directory remains on disk after run",
+    "likely_causes": [
+      "Home directory filesystem is read-only or mounted with nowrite flag",
+      "File permissions: jobs_root exists but is mode 000 or owned by different user",
+      "Disk is full (ENOSPC)",
+      "Filesystem has inode exhaustion",
+      "SELinux or AppArmor policy blocks writes to ~/.cluxion_hermes",
+      "macOS: full disk access not granted to terminal app"
+    ],
+    "fix_steps": [
+      "Check directory exists and permissions: ls -ld ~/.cluxion_hermes/jobs",
+      "Create directory if missing: mkdir -p ~/.cluxion_hermes/jobs",
+      "Fix permissions: chmod 700 ~/.cluxion_hermes/jobs",
+      "Test write: touch ~/.cluxion_hermes/jobs/test.txt && rm ~/.cluxion_hermes/jobs/test.txt",
+      "Check disk space: df -h $HOME | awk '{print $NF, $4}' (should have free space)",
+      "Check filesystem type: df -T $HOME (should not be 'ro' or read-only mount)",
+      "On macOS, enable Full Disk Access: System Settings > Privacy & Security > Full Disk Access > Terminal",
+      "Run doctor again: hermes-call doctor"
+    ],
+    "change_robust": "Probe creates and deletes unique marker file, so detects all I/O failure modes (read, write, delete); adapts to DEFAULT_JOBS_ROOT env variable if set; uses uuid to avoid collisions",
+    "detection_method": "Create temp marker file at jobs_root/.doctor-<uuid>.marker with JSON payload; read it back; verify content matches; delete marker; catch OSError or write failures"
+  },
+  {
+    "check_id": "ask_toolset_contract_mismatch",
+    "category": "hermes_contract",
+    "severity": "medium",
+    "what_it_checks": "ASK_TOOLSETS constant is set to 'context_engine', which is the verified no-tool-required toolset mapping for --ask mode",
+    "failure_symptom": "hermes-call --ask produces answer with tool calls still available; user expects no tools but Hermes shows tool list; live_no_tools doctor check fails",
+    "likely_causes": [
+      "Hermes renamed or removed the 'context_engine' toolset",
+      "Hermes' --ask/-t toolset mapping changed in a major version",
+      "User set custom HERMES_HOME with different toolset configuration",
+      "Hermes version mismatch: cluxion expects old toolset name"
+    ],
+    "fix_steps": [
+      "Check constant in source: grep -n ASK_TOOLSETS src/cluxion_hermes_call/core.py",
+      "Run doctor --live: hermes-call doctor --live (includes live_no_tools check)",
+      "Test manually: hermes -t context_engine -z 'List files. If you have no tools, reply NO_TOOLS' (should say NO_TOOLS)",
+      "If Hermes shows tools, find the actual no-tool toolset: hermes --help | grep -A 10 'toolsets'",
+      "If changed, file issue: 'Hermes renamed no-tool toolset from context_engine to X'",
+      "Update ASK_TOOLSETS in core.py and rebuild"
+    ],
+    "change_robust": "Static check against hardcoded constant; live --live mode probes actual behavior by inspecting Hermes response for NO_TOOLS marker; detects silently wrong toolset mapping",
+    "detection_method": "Check hardcoded constant ASK_TOOLSETS in core.py equals 'context_engine'; compare to Hermes' actual no-tool toolset (requires live check with doctor --live)"
+  },
+  {
+    "check_id": "hermes_command_flag_incompatible",
+    "category": "hermes_contract",
+    "severity": "critical",
+    "what_it_checks": "Hermes command-line interface for oneshot (-z) and resume (chat --resume) modes matches documented contract",
+    "failure_symptom": "hermes-call sends command with -z but Hermes rejects 'unrecognized argument'; hermes-call tries 'chat --resume' but Hermes does not recognize flag; exit code 2",
+    "likely_causes": [
+      "Hermes version renamed -z to --oneshot-only or similar",
+      "chat subcommand was moved or renamed",
+      "--resume flag behavior changed (now called --session or --id)",
+      "Hermes major version (2.x) changed CLI structure"
+    ],
+    "fix_steps": [
+      "Check hermes --help for exact flag names: hermes --help | grep -i 'oneshot\\|session'",
+      "Check chat subcommand: hermes chat --help | head",
+      "Verify available flags: hermes chat --help | grep -i 'resume\\|session\\|id'",
+      "If flags changed, update _build_hermes_command() in core.py",
+      "Run doctor to verify: hermes-call doctor"
+    ],
+    "change_robust": "Help flag checks are already in doctor; -z test is in hermes_help_flags check; resume path is tested indirectly via session cleanup tests",
+    "detection_method": "hermes --help | grep -E '(-z|oneshot)'; hermes chat --help | grep resume; verify exit codes are 0; check flags appear in help"
+  },
+  {
+    "check_id": "subprocess_timeout_not_enforced",
+    "category": "concurrency",
+    "severity": "high",
+    "what_it_checks": "Process timeout is correctly applied and child process is terminated after timeout_seconds",
+    "failure_symptom": "hermes-call hangs for much longer than --timeout value; process does not exit; exit_code is not 124; process group is not terminated",
+    "likely_causes": [
+      "Hermes is started in a separate process group (start_new_session=True) but SIGTERM not reaching child",
+      "Process is stuck in uninterruptible sleep state (I/O wait)",
+      "os.killpg() fails silently due to permissions",
+      "Timeout is measured incorrectly or deadline calc has clock drift",
+      "Child spawns its own daemons that survive killpg"
+    ],
+    "fix_steps": [
+      "Test timeout: timeout 5 hermes-call --timeout 3 'import time; time.sleep(100)' 2>&1 | grep -i 'timeout\\|timed'",
+      "Check exit code: ...and echo $?  (should be 124)",
+      "Verify SIGTERM is sent: strace -e kill hermes-call --timeout 1 '...' 2>&1 | grep kill",
+      "Check for orphan processes: ps aux | grep hermes (should be empty after timeout)",
+      "Verify os.killpg() permissions: hermes-call runs as current user, killpg should work on own PID"
+    ],
+    "change_robust": "Uses subprocess.Popen with start_new_session=True and os.killpg() to terminate process group; timeout is enforced at communicate() level; returncode 124 is deterministic marker for timeout",
+    "detection_method": "Run hermes with --timeout 2 on a slow prompt (e.g., 'sleep 10'); measure elapsed time; verify exit code is 124 and stderr contains 'timed out' or 'SIGTERM'"
+  },
+  {
+    "check_id": "session_cleanup_race_condition",
+    "category": "concurrency",
+    "severity": "medium",
+    "what_it_checks": "Session cleanup correctly identifies and deletes exactly one newly-created session without race conditions when multiple concurrent runs exist",
+    "failure_symptom": "cleanup fails with 'multiple_new_sessions' when only one run occurred; session is not deleted; user sees orphaned sessions after run",
+    "likely_causes": [
+      "Another user or process created a session between before and after capture",
+      "Sessions list is not transactional; race window between capture and delete",
+      "Hermes sessions list caches stale results",
+      "Session ID mismatch due to cwd not being captured correctly",
+      "Concurrent hermes-call runs in same cwd both try to delete, first wins"
+    ],
+    "fix_steps": [
+      "For single-user case: run hermes-call and check session is deleted: hermes sessions list --source cli | wc -l (should decrease)",
+      "For concurrent case: use --keep-session to avoid race: hermes-call --keep-session '...' & hermes-call --keep-session '...' &",
+      "Check expected_cwd matching: hermes sessions export - | jq '.cwd' (should match $(pwd))",
+      "If ambiguous, use session-specific cleanup: hermes sessions delete --yes <id>",
+      "Run single sequential calls to verify determinism"
+    ],
+    "change_robust": "identify_created_session() compares before/after snapshots; if >1 new ID, attempts to disambiguate by exported cwd; if still ambiguous, returns reason; cleanup is optional (keep_session flag bypasses it)",
+    "detection_method": "Run two hermes-call instances in parallel; capture session IDs before/after each; verify identify_created_session returns exactly one ID when before/after diff is 1; attempt delete and verify 'Deleted session' in output"
+  },
+  {
+    "check_id": "sandbox_job_cleanup_symlink_attack",
+    "category": "resource",
+    "severity": "high",
+    "what_it_checks": "Job sandbox deletion safety gates prevent symlink traversal and path escape attacks",
+    "failure_symptom": "malicious symlink in jobs_root could cause arbitrary file deletion; shutil.rmtree() follows symlink and deletes target; user's real data is deleted",
+    "likely_causes": [
+      "Attacker creates ~/.cluxion_hermes/jobs/uuid -> /home/user/important/data symlink",
+      "Hermes sandbox job is created with traversal: cwd = /tmp/jobs/../../etc",
+      "Marker file is in parent dir, symlink check is bypassed",
+      "User manually creates symlink in jobs_root before hermes-call runs"
+    ],
+    "fix_steps": [
+      "Check can_delete_job_dir logic: grep -A 20 'def can_delete_job_dir' src/cluxion_hermes_call/jobs.py",
+      "Test symlink protection: cd ~/.cluxion_hermes/jobs && ln -s /tmp/test symlink_uuid && hermes-call --sandbox 'true' 2>&1 (should not delete /tmp/test)",
+      "Test path escape: mkdir -p /tmp/escape_test && hermes-call --cwd /tmp/escape_test -p 'test' 2>&1 (cwd should not escape jobs_root)",
+      "Verify marker file exists: ls -la ~/.cluxion_hermes/jobs/*/. cluxion_hermes_job (should be present, not symlink)",
+      "Run doctor: hermes-call doctor (jobs_root_writable check verifies marker round-trip)"
+    ],
+    "change_robust": "Multiple safety gates: symlink check (is_symlink()), path resolve and escape check (_is_strictly_under), marker file presence, marker content validation; fail-closed (returns False and reason on any check failure)",
+    "detection_method": "Attempt to delete a job_dir that is a symlink or whose parent is not jobs_root; verify can_delete_job_dir() returns False with 'job_dir_is_symlink' or 'path_escape'; verify job_dir is not deleted"
+  },
+  {
+    "check_id": "sandbox_job_cleanup_marker_tampering",
+    "category": "resource",
+    "severity": "high",
+    "what_it_checks": "Job marker file integrity prevents deletion of unmarked directories and detects tampered markers",
+    "failure_symptom": "attacker modifies marker file to make Hermes think job is safe to delete; shutil.rmtree() deletes wrong directory; data loss",
+    "likely_causes": [
+      "Marker file permissions too loose (world-writable)",
+      "Attacker modifies .cluxion_hermes_job JSON after job creation",
+      "Hermes version changes marker format and old marker is unreadable",
+      "Marker file is manually deleted by user"
+    ],
+    "fix_steps": [
+      "Check marker file permissions: ls -la ~/.cluxion_hermes/jobs/*/.cluxion_hermes_job | awk '{print $1, $NF}'",
+      "Check marker content: cat ~/.cluxion_hermes/jobs/*/.cluxion_hermes_job | jq . (should have job_id, pid, pid_create_time)",
+      "Verify marker matches directory name: job_id=$(jq -r .job_id ~/.cluxion_hermes/jobs/*/.cluxion_hermes_job) && ls -d ~/.cluxion_hermes/jobs/$job_id",
+      "Test marker tampering: manually corrupt JSON and run hermes-call (should skip deletion with 'bad_marker' reason)",
+      "Fix bad markers: hermes-call gc (prunes unmarked or old jobs)"
+    ],
+    "change_robust": "Marker is JSON with job_id, pid, pid_create_time; checks job_id matches directory name; validates PID is positive; catches JSON decode errors; fails safely if any mismatch",
+    "detection_method": "Create job with marker, modify marker JSON (job_id mismatch, bad PID, corrupt JSON); call delete_job_dir(); verify returns False with appropriate reason; directory is not deleted"
+  },
+  {
+    "check_id": "session_export_malformed",
+    "category": "hermes_contract",
+    "severity": "medium",
+    "what_it_checks": "Session export via 'hermes sessions export' produces valid JSONL with parseable session metadata (id, model, cwd)",
+    "failure_symptom": "fetch_session_model() returns None when model is set; fetch_session_metadata() returns error='missing_export_record'; session cleanup loses model info",
+    "likely_causes": [
+      "Hermes sessions export changed output format (no longer JSONL or moved fields)",
+      "Session export does not include model or cwd in metadata",
+      "JSON encoding issue (non-ASCII characters in model name)",
+      "Export command failed but returned exit code 0"
+    ],
+    "fix_steps": [
+      "Test export manually: hermes sessions list --source cli --limit 1 | grep -oE '[0-9]{8}_[0-9]{6}_[0-9a-f]{8,}' | head -1 > /tmp/sid.txt && hermes sessions export - --session-id $(cat /tmp/sid.txt)",
+      "Check format: cat /tmp/export.jsonl | head -1 | jq . (should be valid JSON with 'id', 'model', 'cwd')",
+      "Verify model field: jq .model < /tmp/export.jsonl (should not be null or empty)",
+      "If format changed, update fetch_session_metadata() in sessions.py",
+      "Run doctor --live: hermes-call doctor --live (will test live_answer check)"
+    ],
+    "change_robust": "Parser is line-by-line JSONL; catches JSON decode errors and logs as 'missing_export_record'; optional fields (model, cwd) are safely None if missing; resilient to new fields",
+    "detection_method": "Run 'hermes sessions export - --session-id <id>'; parse each line as JSON; verify 'id' field matches requested session; extract 'model' and 'cwd' fields"
+  },
+  {
+    "check_id": "completion_marker_parsing_fragile",
+    "category": "hermes_contract",
+    "severity": "medium",
+    "what_it_checks": "Completion markers (TASK_COMPLETE, WORK_REMAINS:...) are correctly parsed from final line of Hermes response",
+    "failure_symptom": "hermes-call --until-done never detects completion; status remains 'incomplete' even when Hermes says TASK_COMPLETE; max_iterations is hit; session is not cleaned up",
+    "likely_causes": [
+      "Hermes adds trailing whitespace or blank lines after marker",
+      "Hermes outputs marker on non-final line (model emits marker mid-response)",
+      "Marker case is different (Task_Complete, task_complete)",
+      "WORK_REMAINS: prefix is followed by newline instead of on same line",
+      "Hermes response is truncated by timeout before final line"
+    ],
+    "fix_steps": [
+      "Test marker parsing: hermes-call --until-done 'Do some work. End with exactly TASK_COMPLETE on final line.' 2>&1 | tail -5",
+      "Check final line: hermes-call --until-done '...' 2>&1 | tail -1 (should be 'TASK_COMPLETE' exactly)",
+      "Test WORK_REMAINS: hermes-call --until-done 'List work: WORK_REMAINS: fix bug X' 2>&1 | tail -1",
+      "Check marker regex: grep -n 'TASK_COMPLETE_MARKER\\|WORK_REMAINS_PREFIX' src/cluxion_hermes_call/core.py",
+      "Verify parse logic: _parse_completion_marker() in core.py (strips whitespace, checks last non-empty line)"
+    ],
+    "change_robust": "Parser strips trailing whitespace and empty lines; checks only final non-empty line; handles case-sensitive exact match; detects prefix match for WORK_REMAINS; fails gracefully with status='incomplete' if no marker",
+    "detection_method": "Run hermes-call --until-done with prompt that ends in 'TASK_COMPLETE' or 'WORK_REMAINS: X'; parse last line of output; verify marker is extracted; status is 'complete' or 'incomplete'"
+  },
+  {
+    "check_id": "until_done_session_identification_ambiguous",
+    "category": "concurrency",
+    "severity": "medium",
+    "what_it_checks": "Session ID is correctly identified for --until-done resume when multiple new sessions are created",
+    "failure_symptom": "hermes-call --until-done fails to identify session; cleanup returns 'multiple_new_sessions:N'; resume is not attempted; status='incomplete'",
+    "likely_causes": [
+      "Two concurrent hermes-call --until-done in same cwd both create sessions",
+      "cwd export fails or is not captured correctly by Hermes",
+      "identify_created_session() cannot disambiguate by cwd",
+      "select_session_by_exported_cwd() fails to match expected_cwd"
+    ],
+    "fix_steps": [
+      "Test single sequential: hermes-call --until-done 'task1' && hermes-call --until-done 'task2'",
+      "Check session cwd: hermes sessions export - | jq -r 'select(.cwd) | .cwd' | sort | uniq -c",
+      "Test concurrent (different cwd): (cd /tmp && hermes-call --until-done 'task1' &) && (cd $HOME && hermes-call --until-done 'task2' &) && wait",
+      "If ambiguous, use --keep-session and manual cleanup: hermes-call --until-done --keep-session '...' && hermes sessions delete --yes <id>",
+      "Verify expected_cwd is resolved: grep -n 'expected_cwd' src/cluxion_hermes_call/sessions.py"
+    ],
+    "change_robust": "Session identification uses before/after snapshots of session list; if multiple new IDs, attempts cwd-based selection using exported metadata; fails safely with reason code if ambiguous",
+    "detection_method": "Run hermes-call --until-done twice concurrently in same cwd; verify each identifies its own session by cwd matching; attempt resume with correct ID; verify different sessions are resumed"
+  },
+  {
+    "check_id": "model_argument_invalid",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Model passed via -m flag is valid and recognized by Hermes",
+    "failure_symptom": "hermes-call answer is empty; exit code is 1; Hermes logs 'no final response was produced' or 'model X not configured'",
+    "likely_causes": [
+      "User passed unsupported model: hermes-call -m 'gpt-999' (no such model)",
+      "Model name is typo: 'grok-4.2' instead of 'grok-4.3'",
+      "Model is valid but authentication failed (API key invalid or expired)",
+      "Model provider is not configured (e.g., model=grok but xai-oauth is not authorized)"
+    ],
+    "fix_steps": [
+      "List available models: hermes config model.catalog (if enabled) or hermes models (if available)",
+      "Check current default: hermes config model.default",
+      "Test model: hermes -m grok-4.3 -z 'test' (should return a response)",
+      "If model does not exist, use default: hermes-call 'prompt' (no -m flag)",
+      "If auth failed, re-authorize: hermes auth login or check ~/.hermes/auth.json"
+    ],
+    "change_robust": "Model validation happens in Hermes subprocess, not in hermes-call; exit code and response detection are robust; error is caught and reported in exit_code and answer",
+    "detection_method": "Run hermes -m <model> -z 'hello' with invalid model; check exit code and stderr for 'unknown model', 'model not found', or 'no final response'"
+  },
+  {
+    "check_id": "cwd_invalid_or_inaccessible",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Working directory specified via -C is accessible and can be changed into",
+    "failure_symptom": "hermes-call exits with exit code 1; stderr contains 'No such file or directory'; answer is empty",
+    "likely_causes": [
+      "User passed non-existent path: hermes-call -C /nonexistent/path",
+      "Path exists but is not a directory: hermes-call -C /etc/passwd",
+      "Path is inaccessible (permission denied): hermes-call -C /root",
+      "Path is a broken symlink",
+      "Path was deleted between argument parse and subprocess.Popen"
+    ],
+    "fix_steps": [
+      "Verify path exists: test -d /path/to/cwd && echo ok || echo missing",
+      "Verify path is accessible: cd /path/to/cwd && pwd (should succeed)",
+      "Check permissions: ls -ld /path/to/cwd (should have 'x' for current user)",
+      "If symlink, verify target: ls -L /path/to/cwd (should resolve)",
+      "Use absolute path: hermes-call -C $(cd /path/to/cwd && pwd) 'prompt'"
+    ],
+    "change_robust": "Path is resolved with .resolve(strict=False), so it tolerates missing final components; subprocess.Popen will fail if cwd does not exist; error is caught and exit code is 1",
+    "detection_method": "subprocess.Popen with cwd=<path> after path.resolve(); if resolve() raises OSError or cwd does not exist, Popen raises FileNotFoundError"
+  },
+  {
+    "check_id": "prompt_from_stdin_fails",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Prompt from stdin (- argument) is read correctly and not empty",
+    "failure_symptom": "hermes-call exits with code 2; error 'PROMPT is required'; or runs with empty prompt and Hermes fails",
+    "likely_causes": [
+      "stdin is closed or EOF at start (pipe broken)",
+      "User piped empty file: echo '' | hermes-call -",
+      "stdin is a terminal and user did not type anything (Ctrl+D immediately)"
+    ],
+    "fix_steps": [
+      "Provide prompt via stdin: echo 'prompt text' | hermes-call -",
+      "Or use positional: hermes-call 'prompt text'",
+      "Or use --prompt: hermes-call --prompt 'prompt text'",
+      "If piping from file: cat file.txt | hermes-call - (file must be non-empty)"
+    ],
+    "change_robust": "stdin.read() is robust; _resolve_prompt() checks for None and raises parser.error(); empty prompt is treated as falsy and rejected",
+    "detection_method": "Run hermes-call - with stdin '<empty>'; verify error message 'PROMPT is required'; exit code 2"
+  },
+  {
+    "check_id": "json_mode_output_malformed",
+    "category": "data",
+    "severity": "low",
+    "what_it_checks": "JSON output from --json flag is valid and parseable",
+    "failure_symptom": "stdout contains invalid JSON; json.loads() raises JSONDecodeError; downstream tools cannot parse result",
+    "likely_causes": [
+      "Hermes answer contains unescaped quotes or control characters that break JSON string encoding",
+      "json.dumps() encodes non-ASCII characters and ensure_ascii=True breaks output",
+      "CallResult.to_json_object() has a bug that adds non-JSON values"
+    ],
+    "fix_steps": [
+      "Test JSON output: hermes-call --json 'test' | jq . (should parse without errors)",
+      "Check types: hermes-call --json 'test' | jq 'keys' (should include required keys)",
+      "Verify escaping: hermes-call --json 'test' | od -c | head (should have \\u escapes for special chars)",
+      "Test with Unicode: echo 'unicode: 你好' | hermes-call - --json | jq .answer",
+      "Verify CallResult.to_json_object() in core.py uses json.dumps with ensure_ascii=False and separators=(',', ':')"
+    ],
+    "change_robust": "json.dumps() is robust; ensure_ascii=False and separators are explicitly set; all CallResult fields are JSON-serializable (bool, int, str, list, dict, None)",
+    "detection_method": "Run hermes-call --json 'test'; capture stdout; parse with json.loads(); verify keys 'ok', 'answer', 'model', 'duration_ms', 'session_cleaned', 'exit_code' are present"
+  },
+  {
+    "check_id": "timeout_zero_or_negative",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Timeout value is positive and not zero or negative",
+    "failure_symptom": "hermes-call exits with code 2; error 'timeout must be greater than 0'",
+    "likely_causes": [
+      "User passed --timeout 0",
+      "User passed --timeout -1",
+      "Float parsing issue (--timeout 0.0001 might be treated as zero)"
+    ],
+    "fix_steps": [
+      "Use positive timeout: hermes-call --timeout 30 'prompt'",
+      "Default timeout is 600s: hermes-call 'prompt' (no --timeout needed)",
+      "For very fast runs: hermes-call --timeout 10 'prompt'"
+    ],
+    "change_robust": "Validation is done in options_from_namespace() before CallOptions is created; parser.error() ensures exit code 2 for user error",
+    "detection_method": "Parse --timeout argument; check if timeout_seconds <= 0; call parser.error() if invalid; exit code 2"
+  },
+  {
+    "check_id": "max_iterations_invalid",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Max iterations for --until-done is positive and > 0",
+    "failure_symptom": "hermes-call exits with code 2; error 'max-iterations must be greater than 0'",
+    "likely_causes": [
+      "User passed --max-iterations 0",
+      "User passed --max-iterations -1"
+    ],
+    "fix_steps": [
+      "Use positive value: hermes-call --until-done --max-iterations 8 'prompt'",
+      "Default is 8: hermes-call --until-done 'prompt' (no --max-iterations needed)"
+    ],
+    "change_robust": "Validation in options_from_namespace(); parser.error() ensures clean exit code 2",
+    "detection_method": "Parse --max-iterations argument; check if max_iterations <= 0; call parser.error() if invalid; exit code 2"
+  },
+  {
+    "check_id": "conflicting_flags_detected",
+    "category": "config",
+    "severity": "low",
+    "what_it_checks": "Conflicting flag combinations are rejected with clear error message",
+    "failure_symptom": "hermes-call exits with code 2; error 'X and Y cannot be used together'",
+    "likely_causes": [
+      "User passed both --ask and --toolsets (both specify toolset)",
+      "User passed both --cd and --sandbox (both control cwd)",
+      "User passed --keep without --sandbox (--keep is meaningless without sandbox)"
+    ],
+    "fix_steps": [
+      "Use one toolset option: hermes-call --ask 'prompt' (or --toolsets xyz, not both)",
+      "Use one cwd option: hermes-call -C /path 'prompt' (or --sandbox, not both)",
+      "Use --keep only with --sandbox: hermes-call --sandbox --keep 'prompt'"
+    ],
+    "change_robust": "Validation in options_from_namespace(); clear error messages for each conflict; parser.error() ensures predictable exit code 2",
+    "detection_method": "Check for invalid combinations: --ask + --toolsets, --cd + --sandbox, --keep + (not --sandbox); call parser.error() if found; exit code 2"
+  },
+  {
+    "check_id": "live_model_unavailable",
+    "category": "runtime",
+    "severity": "medium",
+    "what_it_checks": "Live doctor check can reach the model and get a response within timeout",
+    "failure_symptom": "doctor --live returns live_answer=False; exit_code != 0 or answer is empty; error is 'no final response produced' or timeout",
+    "likely_causes": [
+      "API key or model credentials are invalid or expired",
+      "Model provider (xAI, OpenAI, local vLLM) is not reachable (network issue)",
+      "Model is overloaded or slow (timeout hit)",
+      "Default model is not set (config.yaml has no model.default)"
+    ],
+    "fix_steps": [
+      "Test model directly: hermes -z 'hello' (should return answer within seconds)",
+      "Check auth: hermes auth list (should show valid credentials)",
+      "Check model: hermes config model.default (should not be null)",
+      "Test network: ping api.x.ai or ping api.openai.com (depending on provider)",
+      "Run doctor --live with longer timeout: hermes-call doctor --live --timeout 300",
+      "Check ~/.hermes/.env for API keys: grep -i 'key\\|token' ~/.hermes/.env | head"
+    ],
+    "change_robust": "Live check is optional (doctor without --live succeeds); live check has configurable timeout; detects both exit code failure and empty answer; returns detailed reason",
+    "detection_method": "Run hermes --ask -z 'List files...' with timeout 120s; check exit code 0; check answer is not empty"
+  },
+  {
+    "check_id": "process_group_termination_fails",
+    "category": "concurrency",
+    "severity": "high",
+    "what_it_checks": "Process group is successfully terminated after timeout via SIGTERM and SIGKILL",
+    "failure_symptom": "Process remains after hermes-call exits; orphaned hermes process in ps; exit code is 124 but process group survives; resource leak",
+    "likely_causes": [
+      "os.killpg() fails due to permission or process already exited before kill",
+      "SIGTERM is not delivered (process in uninterruptible sleep, kernel bug)",
+      "Hermes ignores SIGTERM and requires SIGKILL",
+      "Process spawns daemon child that detaches from process group"
+    ],
+    "fix_steps": [
+      "Test manual termination: hermes -z 'import time; time.sleep(100)' &; sleep 1; kill -TERM $!; sleep 1; ps aux | grep 'hermes -z'",
+      "Test with strace: strace -e kill,signal hermes-call --timeout 1 'import time; time.sleep(100)' 2>&1 | grep -i kill",
+      "Check process group: bash -c 'hermes -z \"sleep 100\" & sleep 0.5; ps -o pid,pgid -p $!' (should have same pgid)",
+      "Verify SIGKILL fallback: in core.py, _terminate_process_group() does SIGTERM then SIGKILL"
+    ],
+    "change_robust": "Code uses start_new_session=True to create process group; os.killpg(pid, SIGTERM) terminates group; fallback to SIGKILL after timeout; detects and logs errors",
+    "detection_method": "Run hermes with infinite loop; timeout after 2 seconds; check stderr for 'process group' termination messages; verify process is gone: ps aux | grep hermes"
+  },
+  {
+    "check_id": "secret_redaction_incomplete",
+    "category": "data",
+    "severity": "high",
+    "what_it_checks": "API keys and tokens are redacted from diagnostic output in sanitize_diagnostic()",
+    "failure_symptom": "Diagnostic output printed to stderr contains raw API key or Bearer token; secret is exposed in logs or terminal history",
+    "likely_causes": [
+      "SECRET_PATTERNS regex does not match new key format (e.g., 'api-key' with hyphen)",
+      "Bearer token format changed (new prefix)",
+      "Secret appears in non-matching location (not in assignment context)",
+      "Regex is not case-insensitive"
+    ],
+    "fix_steps": [
+      "Check patterns: grep -n 'SECRET_PATTERNS' src/cluxion_hermes_call/core.py",
+      "Test redaction: hermes-call 'test' 2>&1 | grep -i 'api.*key\\|token\\|secret\\|bearer' (should not appear)",
+      "Test with fake prompt: hermes-call 'api_key=secret123' 2>&1 | grep -c secret123 (should be 0)",
+      "If pattern missing, add to SECRET_PATTERNS: re.compile(r'new_pattern')"
+    ],
+    "change_robust": "Multiple regex patterns match common secret formats (api_key, api-key, token, secret, password, bearer); case-insensitive; replaces with '[redacted]'; prompt is also redacted explicitly",
+    "detection_method": "Create fake diagnostic with 'api_key=secret123'; call sanitize_diagnostic(); check 'secret123' is replaced with '[redacted]'"
+  },
+  {
+    "check_id": "python_version_incompatibility",
+    "category": "install",
+    "severity": "critical",
+    "what_it_checks": "Python version is >= 3.11 (required by cluxion-hermes-call-cli)",
+    "failure_symptom": "ImportError or SyntaxError on from __future__ import annotations; type hints fail to parse; exit code during import",
+    "likely_causes": [
+      "User has Python 3.10 installed",
+      "Python 3.11 is installed but not on PATH (using system Python 3.8)",
+      "Virtual environment is using wrong Python version"
+    ],
+    "fix_steps": [
+      "Check current Python: python --version (should be Python 3.11+)",
+      "Use specific Python: python3.11 -m hermes-call 'prompt'",
+      "Install Python 3.11+: brew install python@3.11 (macOS) or apt install python3.11 (Linux)",
+      "Use virtual environment: python3.11 -m venv venv && source venv/bin/activate && pip install cluxion-hermes-call-cli",
+      "Check cluxion-hermes-call-cli was installed for right Python: pip show cluxion-hermes-call-cli | grep Location"
+    ],
+    "change_robust": "Check can be done at import time; pyproject.toml declares requires-python = '>=3.11'; package metadata will reject installation on Python < 3.11",
+    "detection_method": "Run python --version; parse major.minor; verify >= 3.11"
+  },
+  {
+    "check_id": "plugin_registration_fails",
+    "category": "install",
+    "severity": "high",
+    "what_it_checks": "Hermes plugin entry point is correctly registered via entry-points in pyproject.toml",
+    "failure_symptom": "hermes call doctor returns 'unrecognized command'; error 'call is not a known subcommand'; plugin is not installed",
+    "likely_causes": [
+      "cluxion-hermes-call-cli is not installed in the same Python environment as Hermes",
+      "Hermes plugin discovery does not see entry-point (setup.py/pyproject.toml metadata issue)",
+      "Hermes was installed before cluxion-hermes-call-cli (needs reinstall or pip install --force-reinstall)",
+      "plugin.py has syntax error (register() function fails)"
+    ],
+    "fix_steps": [
+      "Verify installation: pip show cluxion-hermes-call-cli (should be installed)",
+      "Check entry-point: grep -A 2 'entry-points.*hermes_agent.plugins' pyproject.toml",
+      "Reinstall plugin: pip uninstall cluxion-hermes-call-cli && pip install cluxion-hermes-call-cli",
+      "Test plugin: hermes call 'hello' (should work; if not, try hermes call doctor)",
+      "Check Hermes plugin list: hermes call ... (no direct list, but any hermes call command should work if plugin loaded)"
+    ],
+    "change_robust": "Entry-point is specified in pyproject.toml; Hermes plugin discovery is automatic on install; can be tested by running any hermes call subcommand",
+    "detection_method": "Check hermes call doctor runs without error; verify plugin.register() is called; check Hermes loads cluxion-hermes-call-cli as plugin"
+  }
+]

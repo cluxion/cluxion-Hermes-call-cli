@@ -22,6 +22,7 @@ from cluxion_hermes_call.sessions import (
 )
 
 ASK_TOOLSETS = "context_engine"
+ASK_MODE_PREFACE = "[ASK MODE] You have NO file, terminal, or write tools — only reasoning and read-only context retrieval. Never claim you created, edited, ran, or deleted anything. If the request requires tools you do not have, say so explicitly and stop.\n\n"
 TASK_COMPLETE_MARKER = "TASK_COMPLETE"
 WORK_REMAINS_PREFIX = "WORK_REMAINS:"
 COMPLETION_CONTRACT = """
@@ -198,6 +199,7 @@ def _run_hermes_process_with_prompt(
             env=_child_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             start_new_session=True,
         )
@@ -223,6 +225,8 @@ def _build_hermes_command(
     resume_session_id: str | None = None,
 ) -> list[str]:
     actual_prompt = options.prompt if prompt is None else prompt
+    if options.ask:
+        actual_prompt = ASK_MODE_PREFACE + actual_prompt
     if resume_session_id is not None:
         command = [options.hermes_bin, "chat", "-Q", "--resume", resume_session_id]
         if options.ask:

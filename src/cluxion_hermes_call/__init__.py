@@ -2,6 +2,6 @@
 
 from cluxion_hermes_call.api import PostHermes, PostHermesError
 
-__version__ = "0.2.1"
+__version__ = "0.3.1"
 
 __all__ = ["PostHermes", "PostHermesError", "__version__"]

@@ -11,16 +11,24 @@ from typing import TextIO
 from cluxion_hermes_call import __version__
 from cluxion_hermes_call.config import default_model_help_line
 from cluxion_hermes_call.core import CallOptions, CallResult, run_call
-from cluxion_hermes_call.doctor import run_doctor, write_doctor_result
+from cluxion_hermes_call.doctor.framework import (
+    DoctorContext,
+    DoctorResult,
+    render_json,
+    render_text,
+    run_doctor as framework_run_doctor,
+)
+from cluxion_hermes_call.doctor.live import live_checks
+from cluxion_hermes_call.doctor.probes import PROBES
 from cluxion_hermes_call.jobs import gc_jobs
 
 
 def add_call_arguments(parser: argparse.ArgumentParser) -> None:
     """Attach hermes-call invocation flags to an argparse parser."""
     parser.add_argument("prompt", nargs="?", metavar="PROMPT", help="Prompt text, or '-' to read from stdin")
-    parser.add_argument("-p", "--prompt", dest="prompt_alias", help="Prompt text alias")
+    parser.add_argument("--prompt", dest="prompt_alias", help="Prompt text (alternative to the positional PROMPT)")
     parser.add_argument("-m", "--model", help="Per-run Hermes model override passed to hermes -m")
-    parser.add_argument("--ask", action="store_true", help="Answer-only mode using the verified no-tool toolset")
+    parser.add_argument("--ask", action="store_true", help="Answer-only question mode (no file/terminal/write tools; read-only context retrieval)")
     parser.add_argument("-C", "--cd", dest="cwd", help="Run hermes with this subprocess working directory")
     parser.add_argument("--sandbox", action="store_true", help="Run in a fresh ~/.cluxion_hermes job work directory")
     parser.add_argument("--json", action="store_true", help="Print one JSON result object to stdout")
@@ -50,6 +58,7 @@ def build_gc_parser(prog: str = "hermes-call gc") -> argparse.ArgumentParser:
 def build_doctor_parser(prog: str = "hermes-call doctor") -> argparse.ArgumentParser:
     """Build the doctor subcommand parser."""
     parser = argparse.ArgumentParser(prog=prog)
+    parser.add_argument("--json", action="store_true", help="Print framework JSON to stdout")
     parser.add_argument("--live", action="store_true", help="Run one tiny live --ask model round-trip")
     parser.add_argument("--timeout", type=float, default=120.0, help="Live check timeout in seconds (default: 120)")
     parser.add_argument("-V", "--version", action="store_true", help="Show version and exit")
@@ -94,8 +103,36 @@ def _main_doctor(argv: list[str]) -> int:
         print(f"hermes-call {__version__}")
         return 0
 
-    result = run_doctor(live=bool(ns.live), timeout_seconds=float(ns.timeout))
-    write_doctor_result(result)
+    # Framework-based doctor (always), append live checks when --live
+    from importlib.resources import files
+    from pathlib import Path
+
+    catalog_path = files("cluxion_hermes_call.doctor") / "catalog.json"
+    result = framework_run_doctor(
+        cwd=Path.cwd(),
+        catalog_path=Path(str(catalog_path)),
+        probes=PROBES,
+        plugin="hermes-call",
+        version=__version__,
+    )
+
+    if ns.live:
+        live_results = live_checks(ns.timeout)
+        result = DoctorResult(
+            plugin=result.plugin,
+            version=result.version,
+            checks=result.checks + tuple(live_results),
+        )
+
+    if ns.json:
+        print(render_json(result))
+        return 0 if result.ok else 1
+
+    # text to stderr
+    from .doctor.framework import load_catalog
+    cat = load_catalog(Path(str(catalog_path)))
+    text = render_text(result, cat, verbose=False)
+    print(text, file=sys.stderr)
     return 0 if result.ok else 1
 
 
@@ -164,7 +201,9 @@ def _resolve_prompt(
     if prompt is None:
         parser.error("PROMPT is required")
     if prompt == "-":
-        return stdin.read()
+        prompt = stdin.read()
+    if not prompt.strip():
+        parser.error("PROMPT is empty")
     return prompt
 
 
