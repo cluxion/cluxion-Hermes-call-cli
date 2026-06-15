@@ -20,7 +20,7 @@ class PostHermesError(RuntimeError):
 
 @dataclass(frozen=True)
 class _PostHermes:
-    """Callable facade whose direct call returns text and .run returns structure."""
+    """Callable facade whose direct call returns text or JSON and .run returns structure."""
 
     def __call__(
         self,
@@ -52,7 +52,6 @@ class _PostHermes:
         path: str | Path | None = None,
         prompt: str,
         until_done: bool = False,
-        json: bool = False,
         timeout: float = 600.0,
         max_iterations: int = 8,
         keep_session: bool = False,
@@ -60,8 +59,7 @@ class _PostHermes:
         toolsets: str | None = None,
         hermes_bin: str = "hermes",
     ) -> CallResult:
-        """Run Hermes and return the structured CallResult object."""
-        del json
+        """Run Hermes and return CallResult; use direct json=True for a JSON string."""
         result = run_call(
             CallOptions(
                 prompt=prompt,

@@ -584,6 +584,11 @@ def test_until_done_loops_until_task_complete(monkeypatch):
     assert "Completion contract for hermes-call --until-done" in calls[0]["prompt"]
 
 
+def test_strip_completion_marker_removes_marker_lines_before_later_text():
+    assert core._strip_completion_marker("answer\nTASK_COMPLETE\nafter\n") == "answer\nafter"
+    assert core._strip_completion_marker("answer\nWORK_REMAINS: finish later\nafter\n") == "answer\nafter"
+
+
 def test_until_done_stops_incomplete_at_max_iterations(monkeypatch):
     monkeypatch.setattr(core, "capture_session_ids", lambda **kwargs: SessionSnapshot(frozenset({"before"})))
     monkeypatch.setattr(
@@ -653,6 +658,8 @@ def test_posthermes_simple_returns_string_and_structured_returns_object(monkeypa
     monkeypatch.setattr(api, "run_call", fake_run_call)
 
     assert PostHermes(model="grok-4.3", path="/tmp", prompt="hi") == "api-answer"
+    payload = json.loads(PostHermes(model="grok-4.3", path="/tmp", prompt="hi", json=True))
+    assert payload["answer"] == "api-answer"
     structured = PostHermes.run(model="grok-4.3", path="/tmp", prompt="hi", until_done=True)
 
     assert structured.answer == "api-answer"

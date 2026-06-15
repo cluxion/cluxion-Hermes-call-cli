@@ -401,13 +401,11 @@ def _parse_completion_marker(text: str) -> str | None:
 
 
 def _strip_completion_marker(text: str) -> str:
-    lines = text.rstrip().splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if lines:
-        last = lines[-1].strip()
-        if last == TASK_COMPLETE_MARKER or last.startswith(WORK_REMAINS_PREFIX):
-            lines.pop()
+    lines = [
+        line
+        for line in text.rstrip().splitlines()
+        if line.strip() != TASK_COMPLETE_MARKER and not line.strip().startswith(WORK_REMAINS_PREFIX)
+    ]
     return "\n".join(lines).strip()
 
 
