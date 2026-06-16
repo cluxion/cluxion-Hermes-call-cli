@@ -30,7 +30,11 @@ def add_call_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("prompt", nargs="?", metavar="PROMPT", help="Prompt text, or '-' to read from stdin")
     parser.add_argument("--prompt", dest="prompt_alias", help="Prompt text (alternative to the positional PROMPT)")
     parser.add_argument("-m", "--model", help="Per-run Hermes model override passed to hermes -m")
-    parser.add_argument("--ask", action="store_true", help="Answer-only question mode (no file/terminal/write tools; read-only context retrieval)")
+    parser.add_argument(
+        "--ask",
+        action="store_true",
+        help="Answer-only question mode (no file/terminal/write tools; read-only context retrieval)",
+    )
     parser.add_argument("-C", "--cd", dest="cwd", help="Run hermes with this subprocess working directory")
     parser.add_argument("--sandbox", action="store_true", help="Run in a fresh ~/.cluxion_hermes job work directory")
     parser.add_argument("--json", action="store_true", help="Print one JSON result object to stdout")
@@ -172,6 +176,7 @@ def _main_doctor(argv: list[str]) -> int:
 
     # text to stderr
     from .doctor.framework import load_catalog
+
     cat = load_catalog(Path(str(catalog_path)))
     text = render_text(result, cat, verbose=False)
     print(text, file=sys.stderr)

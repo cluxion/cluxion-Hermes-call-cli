@@ -117,34 +117,44 @@ def test_help_prints_default_model_line(monkeypatch, capsys):
     assert "Default model: xai-oauth/grok-4.3" in capsys.readouterr().out
 
 
-
-
 def test_doctor_cli_json_shape_and_exit_zero(monkeypatch, capsys):
     result = DoctorResult(plugin="hermes-call", version="0.3.1", checks=())
+
     def fake_framework_run_doctor(**kw):
         return result
+
     monkeypatch.setattr(cli, "framework_run_doctor", fake_framework_run_doctor)
     assert cli.main(["doctor", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
 
+
 def test_doctor_cli_live_failure_exits_one(monkeypatch, capsys):
     def fake_live(t):
         return [CheckResult(check_id="live_answer", category="live", severity="high", status="fail", detail="fail")]
+
     monkeypatch.setattr(cli, "live_checks", fake_live)
     # need to make framework also return failing? but for live append fail
     result_ok = DoctorResult(plugin="hermes-call", version="0.3.1", checks=())
-    def fake_run(**kw): return result_ok
+
+    def fake_run(**kw):
+        return result_ok
+
     monkeypatch.setattr(cli, "framework_run_doctor", fake_run)
     assert cli.main(["doctor", "--live", "--json"]) == 1
 
+
 def test_plugin_doctor_command_wires_to_doctor(monkeypatch, capsys):
     result = DoctorResult(plugin="hermes-call", version="0.3.1", checks=())
-    def fake(**kw): return result
+
+    def fake(**kw):
+        return result
+
     monkeypatch.setattr(hermes_plugin, "framework_run_doctor", fake)
     ns = argparse.Namespace(version=False, prompt="doctor", prompt_alias=None, json=False, live=False, timeout=120.0)
     assert hermes_plugin._handle_call_command(ns) == 0
     assert json.loads(capsys.readouterr().err)["ok"] is True
+
 
 def _completed(command: list[str], returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
@@ -173,11 +183,6 @@ def _doctor_runner(overrides: dict[tuple[str, ...], subprocess.CompletedProcess[
         return responses.get(tuple(command), _completed(command, 99, stderr=f"unexpected command: {command!r}"))
 
     return runner
-
-
-
-
-
 
 
 def test_session_list_parser():
@@ -581,12 +586,15 @@ def test_live_until_done_smoke(capsys):
 
 def test_doctor_no_usage_on_stderr(monkeypatch, capsys):
     result = DoctorResult(plugin="hermes-call", version="0.3.3", checks=())
+
     def fake_framework_run_doctor(**kw):
         return result
+
     monkeypatch.setattr(cli, "framework_run_doctor", fake_framework_run_doctor)
     assert cli.main(["doctor"]) == 0
     err = capsys.readouterr().err
     assert "usage:" not in err.lower()
+
 
 def _gc_list_output(rows: list[dict[str, str]]) -> str:
     lines = [
@@ -800,4 +808,4 @@ def test_capture_uses_bounded_limit():
     # also explicit small limit works
     capture_session_ids(runner=fake_runner, limit=20)
     list_cmds2 = [c for c in captured_cmds if "sessions" in c and "list" in c]
-    assert any("--limit" in c and int(c[c.index("--limit")+1]) == 20 for c in list_cmds2)
+    assert any("--limit" in c and int(c[c.index("--limit") + 1]) == 20 for c in list_cmds2)

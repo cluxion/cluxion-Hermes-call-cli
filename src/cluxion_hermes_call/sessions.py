@@ -299,7 +299,9 @@ def gc_sessions(
         runner=runner,
     )
     if completed.returncode != 0:
-        report.error = f"list_failed:{_short_error(completed.stderr or completed.stdout or f'exit {completed.returncode}')}"
+        report.error = (
+            f"list_failed:{_short_error(completed.stderr or completed.stdout or f'exit {completed.returncode}')}"
+        )
         return report
 
     session_ids = sorted(parse_session_ids_from_list(completed.stdout))

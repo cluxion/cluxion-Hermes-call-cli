@@ -77,11 +77,7 @@ def live_checks(ctx_or_timeout: object = 120.0) -> list[CheckResult]:
             category="live",
             severity="high",
             status="pass" if "NO_TOOLS" in answer.upper() else "fail",
-            detail=(
-                "NO_TOOLS observed"
-                if "NO_TOOLS" in answer.upper()
-                else f"answer={answer[:100]!r}"
-            ),
+            detail=("NO_TOOLS observed" if "NO_TOOLS" in answer.upper() else f"answer={answer[:100]!r}"),
         ),
     ]
     cleanup_detail = result.session_id or result.session_cleanup_reason or "unknown"

@@ -105,6 +105,7 @@ def install_integrity(ctx: DoctorContext) -> tuple[str, str]:
 def no_p_short_flag(ctx: DoctorContext) -> tuple[str, str]:
     try:
         from cluxion_hermes_call import cli
+
         parser = cli.build_call_parser()
         has_p = False
         for action in parser._actions:
@@ -122,6 +123,7 @@ def no_p_short_flag(ctx: DoctorContext) -> tuple[str, str]:
 def empty_prompt_rejected(ctx: DoctorContext) -> tuple[str, str]:
     try:
         from cluxion_hermes_call import cli
+
         dummy_stdin = io.StringIO("")
         dummy_parser = argparse.ArgumentParser()
         # should raise SystemExit via parser.error
@@ -144,6 +146,7 @@ def empty_prompt_rejected(ctx: DoctorContext) -> tuple[str, str]:
 def ask_mode_honesty(ctx: DoctorContext) -> tuple[str, str]:
     try:
         from cluxion_hermes_call import core
+
         preface = getattr(core, "ASK_MODE_PREFACE", "")
         if preface and len(preface) > 10:
             return "pass", "ASK_MODE_PREFACE present and non-empty"
@@ -156,6 +159,7 @@ def ask_mode_honesty(ctx: DoctorContext) -> tuple[str, str]:
 def doctor_gc_magic_safe(ctx: DoctorContext) -> tuple[str, str]:
     try:
         from cluxion_hermes_call import plugin
+
         src = ""
         if hasattr(plugin, "__file__"):
             src = Path(plugin.__file__).read_text()

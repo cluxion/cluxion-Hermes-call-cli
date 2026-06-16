@@ -55,6 +55,7 @@ def _handle_call_command(args: argparse.Namespace) -> int:
     if prompt == "doctor" and not shaping:
         from importlib.resources import files
         from pathlib import Path
+
         catalog_path = files("cluxion_hermes_call.doctor") / "catalog.json"
         result = framework_run_doctor(
             cwd=Path.cwd(),
@@ -88,6 +89,7 @@ def _handle_call_command(args: argparse.Namespace) -> int:
     result = run_call(options)
     if options.json_mode:
         import json
+
         print(json.dumps(result.to_json_object(), ensure_ascii=False, separators=(",", ":")))
     elif result.answer:
         sys.stdout.write(result.answer)
