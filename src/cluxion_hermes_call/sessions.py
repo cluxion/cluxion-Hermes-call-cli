@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 SESSION_ID_AT_EOL_RE = re.compile(r"(?P<id>\d{8}_\d{6}_[0-9a-fA-F]+)\s*$")
-RELATIVE_LAST_ACTIVE_RE = re.compile(
-    r"(?P<value>just now|\d+m ago|\d+h ago|yesterday|\d+d ago|\d{4}-\d{2}-\d{2}|\?)\s*$"
-)
+# Fixed column widths from `hermes sessions list` table header (Preview / Last Active / Src / ID).
+_LIST_PREVIEW_WIDTH = 50
+_LIST_LAST_ACTIVE_WIDTH = 13
 
 
 @dataclass(frozen=True)
@@ -368,20 +368,22 @@ def optimize_session_store(
 def parse_session_list_rows(output: str) -> list[dict[str, str]]:
     """Parse session rows from `hermes sessions list` table output."""
     rows: list[dict[str, str]] = []
+    last_active_start = _LIST_PREVIEW_WIDTH + 1
+    last_active_end = last_active_start + _LIST_LAST_ACTIVE_WIDTH
     for line in output.splitlines():
         id_match = SESSION_ID_AT_EOL_RE.search(line)
         if not id_match:
             continue
         session_id = id_match.group("id")
-        prefix = line[: id_match.start()].rstrip()
         last_active = "?"
-        relative_match = RELATIVE_LAST_ACTIVE_RE.search(prefix)
-        if relative_match:
-            last_active = relative_match.group("value")
-            prefix = prefix[: relative_match.start()].rstrip()
+        if len(line) >= last_active_end:
+            value = line[last_active_start:last_active_end].strip()
+            if value:
+                last_active = value
         source = "cli"
-        if prefix.endswith(" cli"):
-            prefix, source = prefix.rsplit(maxsplit=1)
+        between = line[last_active_end : id_match.start()].strip()
+        if between:
+            source = between.split()[0]
         rows.append({"id": session_id, "last_active": last_active, "source": source})
     return rows
 

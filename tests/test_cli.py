@@ -23,6 +23,7 @@ from cluxion_hermes_call.sessions import (
     gc_sessions,
     parse_relative_last_active,
     parse_session_ids_from_list,
+    parse_session_list_rows,
 )
 
 
@@ -195,6 +196,19 @@ Use a terminal command                             just now      cli    20260612
         "20260612_235819_78bd06",
         "20260612_235819_ad789f",
     }
+
+
+def test_parse_session_list_rows_extracts_last_active_by_column():
+    output = _gc_list_output(
+        [
+            {"id": "20260612_235819_78bd06", "last_active": "just now", "preview": "Reply with exactly pong."},
+            {"id": "20260612_235819_ad789f", "last_active": "30m ago", "preview": "Use a terminal command"},
+        ]
+    )
+    assert parse_session_list_rows(output) == [
+        {"id": "20260612_235819_78bd06", "last_active": "just now", "source": "cli"},
+        {"id": "20260612_235819_ad789f", "last_active": "30m ago", "source": "cli"},
+    ]
 
 
 def test_session_cleanup_deletes_exactly_one_new_id():
@@ -741,6 +755,33 @@ def test_gc_sessions_keeps_unknown_timestamp_fail_closed(monkeypatch):
     assert report.deleted == 0
     assert report.skipped_unknown == 1
     assert report.skipped_unknown_ids == ["20260612_120000_dddd01"]
+
+
+def test_gc_sessions_uses_list_row_last_active_when_export_lacks_timestamps(monkeypatch):
+    # Use wall-clock `now` so list-row relative timestamps align with parse_relative_last_active.
+    now = time.time()
+    deleted: list[str] = []
+    monkeypatch.setattr("cluxion_hermes_call.sessions._load_rich_cli_sessions", lambda **kwargs: {})
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:4] == ["hermes", "sessions", "list", "--source"]:
+            return _completed(
+                command,
+                stdout=_gc_list_output([{"id": "20260612_120000_eeee01", "last_active": "30m ago"}]),
+            )
+        if command[:3] == ["hermes", "sessions", "export"]:
+            return _completed(command, stdout=_gc_export_record(command[-1], title=None))
+        if command[:3] == ["hermes", "sessions", "delete"]:
+            deleted.append(command[-1])
+            return _completed(command, stdout=f"Deleted session '{command[-1]}'.\n")
+        if command[:3] == ["hermes", "sessions", "optimize"]:
+            return _completed(command, stdout="optimized\n")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    report = gc_sessions(dry_run=False, idle_minutes=10, runner=runner, now=now)
+    assert report.deleted == 1
+    assert report.deleted_ids == ["20260612_120000_eeee01"]
+    assert deleted == ["20260612_120000_eeee01"]
 
 
 def test_gc_sessions_cli_dry_run_by_default(monkeypatch, capsys):
