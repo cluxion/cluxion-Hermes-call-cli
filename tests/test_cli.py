@@ -784,6 +784,102 @@ def test_gc_sessions_uses_list_row_last_active_when_export_lacks_timestamps(monk
     assert deleted == ["20260612_120000_eeee01"]
 
 
+def test_gc_sessions_skips_list_when_rich_present(monkeypatch):
+    now = 1_000_000.0
+    deleted: list[str] = []
+    session_id = "20260612_120000_aaaa01"
+    rich = {
+        session_id: {
+            "id": session_id,
+            "source": "cli",
+            "title": None,
+            "ended_at": None,
+            "last_active": now - 1800,
+        }
+    }
+    monkeypatch.setattr("cluxion_hermes_call.sessions._load_rich_cli_sessions", lambda **kwargs: rich)
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:4] == ["hermes", "sessions", "list", "--source"]:
+            raise AssertionError("list subprocess must not run when rich DB is present")
+        if command[:3] == ["hermes", "sessions", "delete"]:
+            deleted.append(command[-1])
+            return _completed(command, stdout=f"Deleted session '{command[-1]}'.\n")
+        if command[:3] == ["hermes", "sessions", "optimize"]:
+            return _completed(command, stdout="optimized\n")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    report = gc_sessions(dry_run=False, idle_minutes=10, runner=runner, now=now)
+    assert report.deleted == 1
+    assert report.deleted_ids == [session_id]
+    assert deleted == [session_id]
+
+
+def test_gc_sessions_rich_and_list_paths_same_decisions(monkeypatch):
+    now = 1_000_000.0
+    session_id = "20260612_120000_aaaa01"
+
+    rich = {
+        session_id: {
+            "id": session_id,
+            "source": "cli",
+            "title": None,
+            "ended_at": None,
+            "last_active": now - 1800,
+        }
+    }
+    monkeypatch.setattr("cluxion_hermes_call.sessions._load_rich_cli_sessions", lambda **kwargs: rich)
+
+    def rich_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:4] == ["hermes", "sessions", "list", "--source"]:
+            raise AssertionError("list subprocess must not run when rich DB is present")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    rich_report = gc_sessions(dry_run=True, idle_minutes=10, runner=rich_runner, now=now)
+
+    monkeypatch.setattr("cluxion_hermes_call.sessions._load_rich_cli_sessions", lambda **kwargs: {})
+
+    def list_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:4] == ["hermes", "sessions", "list", "--source"]:
+            return _completed(
+                command,
+                stdout=_gc_list_output([{"id": session_id, "last_active": "30m ago"}]),
+            )
+        if command[:3] == ["hermes", "sessions", "export"]:
+            return _completed(command, stdout=_gc_export_record(command[-1], last_message_at=now - 1800))
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    list_report = gc_sessions(dry_run=True, idle_minutes=10, runner=list_runner, now=now)
+    assert rich_report.deleted == list_report.deleted == 1
+    assert rich_report.deleted_ids == list_report.deleted_ids == [session_id]
+    assert rich_report.skipped_recent == list_report.skipped_recent == 0
+    assert rich_report.kept_named == list_report.kept_named == 0
+    assert rich_report.skipped_unknown == list_report.skipped_unknown == 0
+
+
+def test_gc_sessions_uses_list_fallback_when_rich_absent(monkeypatch):
+    now = 1_000_000.0
+    list_calls: list[list[str]] = []
+    monkeypatch.setattr("cluxion_hermes_call.sessions._load_rich_cli_sessions", lambda **kwargs: {})
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:4] == ["hermes", "sessions", "list", "--source"]:
+            list_calls.append(command)
+            return _completed(
+                command,
+                stdout=_gc_list_output([{"id": "20260612_120000_aaaa01", "last_active": "30m ago"}]),
+            )
+        if command[:3] == ["hermes", "sessions", "export"]:
+            return _completed(command, stdout=_gc_export_record(command[-1], last_message_at=now - 1800))
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    report = gc_sessions(dry_run=True, idle_minutes=10, runner=runner, now=now)
+    assert len(list_calls) == 1
+    assert list_calls[0][:4] == ["hermes", "sessions", "list", "--source"]
+    assert report.deleted == 1
+    assert report.deleted_ids == ["20260612_120000_aaaa01"]
+
+
 def test_gc_sessions_cli_dry_run_by_default(monkeypatch, capsys):
     now = 1_000_000.0
     deleted: list[str] = []

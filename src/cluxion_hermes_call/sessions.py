@@ -294,23 +294,30 @@ def gc_sessions(
         report.error = "idle_minutes_must_be_positive"
         return report
 
-    completed = _run_session_command(
-        [hermes_bin, "sessions", "list", "--source", "cli", "--limit", str(list_limit)],
-        runner=runner,
-    )
-    if completed.returncode != 0:
-        report.error = (
-            f"list_failed:{_short_error(completed.stderr or completed.stdout or f'exit {completed.returncode}')}"
+    rich_by_id = _load_rich_cli_sessions(hermes_bin=hermes_bin, runner=runner, list_limit=list_limit)
+    list_row_by_id: dict[str, dict[str, str]] = {}
+    if rich_by_id:
+        session_ids = sorted(rich_by_id.keys())
+    else:
+        completed = _run_session_command(
+            [hermes_bin, "sessions", "list", "--source", "cli", "--limit", str(list_limit)],
+            runner=runner,
         )
-        return report
+        if completed.returncode != 0:
+            report.error = (
+                f"list_failed:{_short_error(completed.stderr or completed.stdout or f'exit {completed.returncode}')}"
+            )
+            return report
 
-    session_ids = sorted(parse_session_ids_from_list(completed.stdout))
+        session_ids = sorted(parse_session_ids_from_list(completed.stdout))
+        if not session_ids:
+            return report
+
+        list_rows = parse_session_list_rows(completed.stdout)
+        list_row_by_id = {row["id"]: row for row in list_rows}
+
     if not session_ids:
         return report
-
-    list_rows = parse_session_list_rows(completed.stdout)
-    list_row_by_id = {row["id"]: row for row in list_rows}
-    rich_by_id = _load_rich_cli_sessions(hermes_bin=hermes_bin, runner=runner, list_limit=list_limit)
     current_time = time.time() if now is None else now
     idle_seconds = idle_minutes * 60
 
