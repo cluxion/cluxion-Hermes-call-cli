@@ -72,6 +72,17 @@ result = PostHermes.run(model="grok-4.3", path=".", prompt="작업", until_done=
 
 Hermes 플러그인으로 설치하면 동일한 명령을 `hermes call "..."` 로도 쓸 수 있습니다.
 
+## Hermes 슬래시 커맨드 (0.3.9+)
+
+세션 안에서 codex-exec 스타일 단발 실행:
+
+```
+/hermes-call 이 폴더의 실패 테스트를 고쳐줘
+/hermes-call-doctor
+```
+
+`/` 입력 시 🔌로 표시 · 터미널 `hermes-call`과 동일 엔진, Hermes 세션 cwd·맥락 유지.
+
 ## 라이선스
 
 Apache-2.0
@@ -150,6 +161,17 @@ The direct call returns a string on success and raises `PostHermesError` on fail
 `status`, `iterations`, and `session_cleaned`.
 
 Installed as a Hermes plugin, the same command is available as `hermes call "..."`.
+
+## Hermes slash commands (0.3.9+)
+
+In-session codex-exec style one-shot:
+
+```
+/hermes-call fix the failing tests in this folder
+/hermes-call-doctor
+```
+
+Shows in `/` autocomplete with 🔌 · same engine as terminal `hermes-call`, keeps Hermes session cwd/context.
 
 ## License
 
