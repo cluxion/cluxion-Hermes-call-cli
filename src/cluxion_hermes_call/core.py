@@ -265,6 +265,7 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
     process_results: list[HermesProcessResult] = []
     outputs: list[str] = []
     last_work_remains: str | None = None
+    no_progress_abort = False
     owned_session = SessionCleanupReport(cleaned=False, reason=None)
 
     first_result = _run_hermes_process_with_prompt(
@@ -297,6 +298,7 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
         and last_work_remains is not None
     ):
         resume_prompt = _resume_until_done_prompt(last_work_remains)
+        previous_work_remains = last_work_remains
         result = _run_hermes_process_with_prompt(
             options,
             cwd=cwd,
@@ -312,7 +314,12 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
             status = "complete"
             break
         if marker and marker.startswith(WORK_REMAINS_PREFIX):
-            last_work_remains = marker.removeprefix(WORK_REMAINS_PREFIX).strip()
+            next_work_remains = marker.removeprefix(WORK_REMAINS_PREFIX).strip()
+            last_work_remains = next_work_remains
+            if next_work_remains == previous_work_remains:
+                no_progress_abort = True
+                status = "incomplete"
+                break
         else:
             last_work_remains = None
         if result.returncode != 0 or result.timed_out:
@@ -349,6 +356,7 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
         last_work_remains=last_work_remains,
         max_iterations_reached=iterations >= options.max_iterations and status != "complete",
         timed_out=time.monotonic() >= deadline or final_process.timed_out,
+        no_progress_abort=no_progress_abort,
     )
 
     _emit_diagnostics(
@@ -421,6 +429,7 @@ def _compose_until_done_answer(
     last_work_remains: str | None,
     max_iterations_reached: bool,
     timed_out: bool,
+    no_progress_abort: bool,
 ) -> str:
     body = "\n\n".join(part for part in (_strip_completion_marker(output) for output in outputs) if part)
     if status == "complete":
@@ -433,6 +442,8 @@ def _compose_until_done_answer(
         reasons.append("max iterations reached")
     if timed_out:
         reasons.append("timeout reached")
+    if no_progress_abort:
+        reasons.append("no progress observed")
     if last_work_remains:
         reasons.append(f"last WORK_REMAINS: {last_work_remains}")
     if not reasons:

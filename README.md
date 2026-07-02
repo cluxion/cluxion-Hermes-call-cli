@@ -19,6 +19,20 @@ uv tool install cluxion-hermes-call-cli
 
 `hermes`가 PATH에 있고 기본 모델이 설정된 정상 동작 Hermes Agent 설치가 필요합니다.
 
+### Codex / Claude 플러그인 설치
+
+이 repo root는 Codex/Claude 공통 marketplace plugin artifact입니다. 먼저 위 CLI가 host PATH에서
+실행 가능해야 합니다.
+
+```bash
+codex plugin marketplace add cluxion-local /path/to/cluxion-Hermes-call-cli
+codex plugin add cluxion-hermes-call-cli@cluxion-local
+```
+
+Claude Code에서는 같은 repo root의 `.claude-plugin/plugin.json`을 플러그인으로 설치하세요. 두 host 모두
+`commands/hermes-call.md`와 `skills/hermes-call/SKILL.md`를 발견하고, host가 직접 모델을 호출하지 않고
+`hermes-call --json ...` CLI 계약으로 위임합니다.
+
 ## 사용
 
 ```bash
@@ -72,7 +86,7 @@ result = PostHermes.run(model="grok-4.3", path=".", prompt="작업", until_done=
 
 Hermes 플러그인으로 설치하면 동일한 명령을 `hermes call "..."` 로도 쓸 수 있습니다.
 
-## Hermes 슬래시 커맨드 (0.3.9+)
+## Hermes 슬래시 커맨드 (0.3.10+)
 
 세션 안에서 codex-exec 스타일 단발 실행:
 
@@ -106,6 +120,20 @@ uv tool install cluxion-hermes-call-cli
 ```
 
 Requires a working Hermes Agent install with `hermes` on your PATH and a default model set.
+
+### Codex / Claude plugin install
+
+This repo root is the shared Codex/Claude marketplace plugin artifact. The CLI above must be
+available on the host PATH first.
+
+```bash
+codex plugin marketplace add cluxion-local /path/to/cluxion-Hermes-call-cli
+codex plugin add cluxion-hermes-call-cli@cluxion-local
+```
+
+In Claude Code, install the same repo root from `.claude-plugin/plugin.json`. Both hosts discover
+`commands/hermes-call.md` and `skills/hermes-call/SKILL.md`; they delegate through the
+`hermes-call --json ...` CLI contract instead of owning model execution.
 
 ## Use
 
@@ -162,7 +190,7 @@ The direct call returns a string on success and raises `PostHermesError` on fail
 
 Installed as a Hermes plugin, the same command is available as `hermes call "..."`.
 
-## Hermes slash commands (0.3.9+)
+## Hermes slash commands (0.3.10+)
 
 In-session codex-exec style one-shot:
 

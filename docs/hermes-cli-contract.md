@@ -18,7 +18,7 @@ Verified on 2026-06-14 against the local `hermes` binary on PATH and source at
 | `hermes sessions delete` | Syntax is `hermes sessions delete [--yes] session_id`. A successful delete prints `Deleted session '<id>'.` | `hermes sessions delete --help`; live deletion of probe sessions; `hermes_cli/main.py`. |
 | Plugin CLI registration | `ctx.register_cli_command(name, help, setup_fn, handler_fn=None, description="")`; `setup_fn` receives an argparse subparser. | `hermes_cli/plugins.py`. |
 | Plugin slash registration | `ctx.register_command(name, handler, description="", args_hint="")`; names normalized to lowercase; appear in `/` autocomplete with 🔌. | `hermes_cli/plugins.py`; `hermes_cli/commands.py` `SlashCommandCompleter`. |
-| `hermes-call` slash (0.3.9+) | `/hermes-call <prompt>`, `/hermes-call-doctor` — in-session wrapper around `run_call()`. | `cluxion_hermes_call/plugin.py`. |
+| `hermes-call` slash (0.3.10+) | `/hermes-call <prompt>`, `/hermes-call-doctor` — in-session wrapper around `run_call()`. | `cluxion_hermes_call/plugin.py`. |
 
 ## Wrapper Design Notes
 

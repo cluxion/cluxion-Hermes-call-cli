@@ -486,6 +486,33 @@ def test_until_done_stops_incomplete_at_max_iterations(monkeypatch):
     assert "max iterations reached" in result.answer
 
 
+def test_until_done_stops_when_work_remains_makes_no_progress(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(core, "capture_session_ids", lambda **kwargs: SessionSnapshot(frozenset({"before"})))
+    monkeypatch.setattr(
+        core,
+        "identify_created_session",
+        lambda *args, **kwargs: SessionCleanupReport(False, session_id="owned", model="grok-4.3"),
+    )
+    monkeypatch.setattr(core, "delete_session", lambda *args, **kwargs: SessionCleanupReport(True, session_id="owned"))
+
+    def fake_run_process(options, *, cwd, prompt, resume_session_id=None, timeout_seconds=None):
+        calls.append({"prompt": prompt, "resume_session_id": resume_session_id})
+        return core.HermesProcessResult("partial\nWORK_REMAINS: same blocker\n", "", 0, False)
+
+    monkeypatch.setattr(core, "_run_hermes_process_with_prompt", fake_run_process)
+
+    result = run_call(CallOptions(prompt="do it", until_done=True, max_iterations=8))
+
+    assert len(calls) == 2
+    assert result.ok is False
+    assert result.status == "incomplete"
+    assert result.iterations == 2
+    assert result.last_work_remains == "same blocker"
+    assert "no progress observed" in result.answer
+
+
 def test_until_done_no_session_id_does_not_loop(monkeypatch):
     calls = 0
 
