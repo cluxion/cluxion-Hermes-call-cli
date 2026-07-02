@@ -12,8 +12,37 @@ from pathlib import Path
 from typing import Any
 
 MARKER_FILE = ".cluxion_hermes_job"
+HOME_ENV = "CLUXION_HERMES_CALL_HOME"
 DEFAULT_JOBS_ROOT = Path.home() / ".cluxion_hermes" / "jobs"
 GC_AGE_SECONDS = 24 * 60 * 60
+
+
+class JobRootUnwritableError(OSError):
+    """No writable location for sandbox jobs; carries a fix-it hint."""
+
+    hint = (
+        f"set {HOME_ENV} to a writable directory, or run without --sandbox; "
+        "sandboxed hosts often block writes outside the workspace"
+    )
+
+
+def resolve_jobs_root() -> Path:
+    """Pick a writable jobs root: env override, then home, then workspace-local."""
+    override = os.environ.get(HOME_ENV, "").strip()
+    candidates = (
+        [Path(override).expanduser() / "jobs"] if override else [DEFAULT_JOBS_ROOT, Path.cwd() / ".hermes-call" / "jobs"]
+    )
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / f".probe-{os.getpid()}"
+            probe.touch()
+            probe.unlink()
+            return candidate
+        except OSError as exc:
+            errors.append(f"{candidate}: {exc}")
+    raise JobRootUnwritableError("no writable sandbox job root: " + "; ".join(errors))
 
 
 @dataclass(frozen=True)

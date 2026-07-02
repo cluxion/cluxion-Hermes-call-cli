@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from cluxion_hermes_call.jobs import Job, create_job, delete_job_dir
+from cluxion_hermes_call.jobs import Job, JobRootUnwritableError, create_job, delete_job_dir, resolve_jobs_root
 from cluxion_hermes_call.sessions import (
     SessionCleanupReport,
     SessionSnapshot,
@@ -114,6 +114,18 @@ class CallResult:
         return payload
 
 
+def _sandbox_error_result(exc: JobRootUnwritableError) -> CallResult:
+    return CallResult(
+        ok=False,
+        answer=f"sandbox unavailable: {exc}. Hint: {exc.hint}",
+        model=None,
+        duration_ms=0,
+        session_cleaned=False,
+        exit_code=2,
+        status="sandbox_unwritable",
+    )
+
+
 def run_call(options: CallOptions) -> CallResult:
     """Run Hermes once, clean up its session and sandbox when safe."""
     if options.until_done:
@@ -124,7 +136,10 @@ def run_call(options: CallOptions) -> CallResult:
     cwd = options.cwd
 
     if options.sandbox:
-        job = create_job()
+        try:
+            job = create_job(jobs_root=resolve_jobs_root())
+        except JobRootUnwritableError as exc:
+            return _sandbox_error_result(exc)
         cwd = job.work
     elif cwd is None:
         cwd = Path.cwd()
@@ -267,7 +282,10 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
     cwd = options.cwd
 
     if options.sandbox:
-        job = create_job()
+        try:
+            job = create_job(jobs_root=resolve_jobs_root())
+        except JobRootUnwritableError as exc:
+            return _sandbox_error_result(exc)
         cwd = job.work
     elif cwd is None:
         cwd = Path.cwd()
