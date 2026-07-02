@@ -44,6 +44,13 @@ def add_call_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keep-session", action="store_true", help="Skip session self-cleanup")
     parser.add_argument("--keep", action="store_true", help="Keep the sandbox job directory")
     parser.add_argument("--toolsets", help="Advanced passthrough to hermes -t/--toolsets")
+    parser.add_argument(
+        "-r",
+        "--resume",
+        dest="resume_session",
+        metavar="SESSION_ID",
+        help="Resume an existing Hermes session (passed to hermes -r); the session is never garbage-collected",
+    )
     parser.add_argument("-V", "--version", action="store_true", help="Show version and exit")
 
 
@@ -217,6 +224,8 @@ def options_from_namespace(
         parser.error("--cd and --sandbox cannot be used together")
     if ns.ask and ns.toolsets:
         parser.error("--ask and --toolsets cannot be combined")
+    if ns.resume_session and ns.until_done:
+        parser.error("--resume and --until-done cannot be combined (until-done owns its session)")
 
     cwd = Path(ns.cwd).expanduser() if ns.cwd else None
     return CallOptions(
@@ -232,6 +241,7 @@ def options_from_namespace(
         model=ns.model,
         until_done=bool(ns.until_done),
         max_iterations=int(ns.max_iterations),
+        resume_session=ns.resume_session,
     )
 
 

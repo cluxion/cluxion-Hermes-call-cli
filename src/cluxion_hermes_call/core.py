@@ -57,6 +57,7 @@ class CallOptions:
     until_done: bool = False
     max_iterations: int = 8
     hermes_bin: str = "hermes"
+    resume_session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,14 +130,19 @@ def run_call(options: CallOptions) -> CallResult:
         cwd = Path.cwd()
     cwd = cwd.expanduser().resolve(strict=False)
 
+    # A resumed session belongs to the user; hermes-call must never GC it.
+    owns_session = not options.keep_session and options.resume_session is None
     before = SessionSnapshot(ids=frozenset(), ok=True)
-    if not options.keep_session:
+    if owns_session:
         before = capture_session_ids(hermes_bin=options.hermes_bin)
 
-    process_result = _run_hermes_process(options, cwd=cwd)
+    process_result = _run_hermes_process(options, cwd=cwd, resume_session_id=options.resume_session)
 
-    cleanup_report = SessionCleanupReport(cleaned=False, reason="keep_session" if options.keep_session else None)
-    if not options.keep_session:
+    cleanup_reason = "resumed_session" if options.resume_session is not None else (
+        "keep_session" if options.keep_session else None
+    )
+    cleanup_report = SessionCleanupReport(cleaned=False, reason=cleanup_reason)
+    if owns_session:
         after = capture_session_ids(hermes_bin=options.hermes_bin)
         cleanup_report = cleanup_created_session(before, after, hermes_bin=options.hermes_bin, expected_cwd=cwd)
 
@@ -177,8 +183,12 @@ def run_call(options: CallOptions) -> CallResult:
     )
 
 
-def _run_hermes_process(options: CallOptions, *, cwd: Path) -> HermesProcessResult:
-    return _run_hermes_process_with_prompt(options, cwd=cwd, prompt=options.prompt)
+def _run_hermes_process(
+    options: CallOptions, *, cwd: Path, resume_session_id: str | None = None
+) -> HermesProcessResult:
+    return _run_hermes_process_with_prompt(
+        options, cwd=cwd, prompt=options.prompt, resume_session_id=resume_session_id
+    )
 
 
 def _run_hermes_process_with_prompt(
@@ -230,6 +240,8 @@ def _build_hermes_command(
         actual_prompt = ASK_MODE_PREFACE + actual_prompt
     if resume_session_id is not None:
         command = [options.hermes_bin, "chat", "-Q", "--resume", resume_session_id]
+        if options.model:
+            command.extend(["-m", options.model])
         if options.ask:
             command.extend(["-t", ASK_TOOLSETS])
         elif options.toolsets is not None:
