@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import signal
@@ -316,7 +317,7 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
         if marker and marker.startswith(WORK_REMAINS_PREFIX):
             next_work_remains = marker.removeprefix(WORK_REMAINS_PREFIX).strip()
             last_work_remains = next_work_remains
-            if next_work_remains == previous_work_remains:
+            if _same_remaining_work(next_work_remains, previous_work_remains):
                 no_progress_abort = True
                 status = "incomplete"
                 break
@@ -400,24 +401,40 @@ def _resume_until_done_prompt(last_work_remains: str | None) -> str:
     return f"Continue the remaining work. Last reported remaining work: {remains}{COMPLETION_CONTRACT}\n"
 
 
+def _same_remaining_work(current: str, previous: str | None) -> bool:
+    """Near-identical WORK_REMAINS across iterations means no progress.
+
+    Models rephrase the same blocker; exact string equality misses that and
+    the loop burns every iteration. difflib similarity >= 0.9 counts as same.
+    """
+    if previous is None:
+        return False
+    left = current.strip().casefold()
+    right = previous.strip().casefold()
+    if left == right:
+        return True
+    return difflib.SequenceMatcher(None, left, right).ratio() >= 0.9
+
+
+def _marker_kind(line: str) -> str | None:
+    """Classify a line as a completion marker, tolerating case and whitespace drift."""
+    candidate = line.strip()
+    if candidate.upper() == TASK_COMPLETE_MARKER:
+        return TASK_COMPLETE_MARKER
+    if candidate.upper().startswith(WORK_REMAINS_PREFIX.upper()):
+        return f"{WORK_REMAINS_PREFIX} {candidate[len(WORK_REMAINS_PREFIX):].strip()}"
+    return None
+
+
 def _parse_completion_marker(text: str) -> str | None:
     lines = [line.strip() for line in text.rstrip().splitlines() if line.strip()]
     if not lines:
         return None
-    last = lines[-1]
-    if last == TASK_COMPLETE_MARKER:
-        return TASK_COMPLETE_MARKER
-    if last.startswith(WORK_REMAINS_PREFIX):
-        return last
-    return None
+    return _marker_kind(lines[-1])
 
 
 def _strip_completion_marker(text: str) -> str:
-    lines = [
-        line
-        for line in text.rstrip().splitlines()
-        if line.strip() != TASK_COMPLETE_MARKER and not line.strip().startswith(WORK_REMAINS_PREFIX)
-    ]
+    lines = [line for line in text.rstrip().splitlines() if _marker_kind(line) is None]
     return "\n".join(lines).strip()
 
 

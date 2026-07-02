@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -321,14 +322,39 @@ def gc_sessions(
     current_time = time.time() if now is None else now
     idle_seconds = idle_minutes * 60
 
+    # Fast path: the list table already proves recency. A recent session is
+    # always kept, so skip it before paying a per-session export subprocess.
+    remaining: list[str] = []
     for session_id in session_ids:
-        metadata = _resolve_session_gc_metadata(
-            session_id,
-            list_row=list_row_by_id.get(session_id),
-            rich=rich_by_id.get(session_id),
-            hermes_bin=hermes_bin,
-            runner=runner,
-        )
+        row = list_row_by_id.get(session_id)
+        if rich_by_id.get(session_id) is None and row is not None:
+            seen = parse_relative_last_active(row.get("last_active", "?"), now=current_time)
+            if seen is not None and (current_time - seen) < idle_seconds:
+                report.skipped_recent += 1
+                report.skipped_recent_ids.append(session_id)
+                continue
+        remaining.append(session_id)
+
+    # Exports are independent subprocess calls; run them concurrently.
+    metadata_by_id: dict[str, SessionGcMetadata] = {}
+    if remaining:
+        with ThreadPoolExecutor(max_workers=min(8, len(remaining))) as executor:
+            futures = {
+                executor.submit(
+                    _resolve_session_gc_metadata,
+                    session_id,
+                    list_row=list_row_by_id.get(session_id),
+                    rich=rich_by_id.get(session_id),
+                    hermes_bin=hermes_bin,
+                    runner=runner,
+                ): session_id
+                for session_id in remaining
+            }
+            for future in as_completed(futures):
+                metadata_by_id[futures[future]] = future.result()
+
+    for session_id in remaining:
+        metadata = metadata_by_id[session_id]
         decision = _classify_session_for_gc(metadata, idle_seconds=idle_seconds, now=current_time)
         if decision == "kept_named":
             report.kept_named += 1
