@@ -91,6 +91,20 @@ def test_json_usage_errors_are_json(argv, error, monkeypatch, capsys):
     assert captured.err == ""
 
 
+def test_json_invalid_utf8_stdin_is_json_error(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_call", lambda options: pytest.fail("run_call should not start"))
+    stdin = io.TextIOWrapper(io.BytesIO(b"\xff\xfe\x00bad"), encoding="utf-8")
+
+    assert cli.main(["-", "--json", "--ask"], stdin=stdin) == 2
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "usage_error"
+    assert "UTF-8" in payload["message"]
+    assert captured.err == ""
+
+
 def test_json_timeout_upper_bound_error_does_not_start(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_call", lambda options: pytest.fail("run_call should not start"))
 
@@ -986,8 +1000,7 @@ def test_gc_sessions_reads_sqlite_db_without_list_or_exports(tmp_path, monkeypat
     db_path = tmp_path / "state.db"
     con = sqlite3.connect(db_path)
     con.execute(
-        "create table sessions ("
-        "id text primary key, source text, title text, ended_at real, started_at real, cwd text)"
+        "create table sessions (id text primary key, source text, title text, ended_at real, started_at real, cwd text)"
     )
     con.execute("create table messages (session_id text, timestamp real)")
     con.execute(

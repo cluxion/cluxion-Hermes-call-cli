@@ -287,7 +287,10 @@ def _resolve_prompt(
     if prompt is None:
         parser.error("PROMPT is required")
     if prompt == "-":
-        prompt = stdin.read()
+        try:
+            prompt = stdin.read()
+        except UnicodeDecodeError:
+            parser.error("stdin is not valid UTF-8; pipe UTF-8 encoded text")
     if not prompt.strip():
         parser.error("PROMPT is empty")
     return prompt
