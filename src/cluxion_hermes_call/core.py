@@ -39,6 +39,13 @@ Do not use either marker except as the final line.
 SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)(\S+)"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    # labelless known-prefix keys (mirror backup secret-scan); one prefix group, body dropped by the sub-lambda; min lengths avoid over-redacting benign short strings
+    re.compile(r"(sk-ant-)[A-Za-z0-9_-]{16,}"),
+    re.compile(r"(gh[pousr]_)[A-Za-z0-9]{20,}"),
+    re.compile(r"(xai-)[A-Za-z0-9-]{16,}"),
+    re.compile(r"(hf_)[A-Za-z0-9]{20,}"),
+    re.compile(r"(AKIA)[A-Z0-9]{16}"),
+    re.compile(r"(xox[baprs]-)[A-Za-z0-9-]{10,}"),
 ]
 MAX_PROMPT_BYTES = 256 * 1024
 MAX_TIMEOUT_SECONDS = 86_400.0
@@ -224,8 +231,8 @@ def run_call(options: CallOptions) -> CallResult:
 
     process_result = _run_hermes_process(options, cwd=cwd, resume_session_id=options.resume_session)
 
-    cleanup_reason = "resumed_session" if options.resume_session is not None else (
-        "keep_session" if options.keep_session else None
+    cleanup_reason = (
+        "resumed_session" if options.resume_session is not None else ("keep_session" if options.keep_session else None)
     )
     cleanup_report = SessionCleanupReport(cleaned=False, reason=cleanup_reason)
     if owns_session:
@@ -272,9 +279,7 @@ def run_call(options: CallOptions) -> CallResult:
 def _run_hermes_process(
     options: CallOptions, *, cwd: Path, resume_session_id: str | None = None
 ) -> HermesProcessResult:
-    return _run_hermes_process_with_prompt(
-        options, cwd=cwd, prompt=options.prompt, resume_session_id=resume_session_id
-    )
+    return _run_hermes_process_with_prompt(options, cwd=cwd, prompt=options.prompt, resume_session_id=resume_session_id)
 
 
 def _run_hermes_process_with_prompt(
@@ -528,7 +533,7 @@ def _marker_kind(line: str) -> str | None:
     if candidate.upper() == TASK_COMPLETE_MARKER:
         return TASK_COMPLETE_MARKER
     if candidate.upper().startswith(WORK_REMAINS_PREFIX.upper()):
-        return f"{WORK_REMAINS_PREFIX} {candidate[len(WORK_REMAINS_PREFIX):].strip()}"
+        return f"{WORK_REMAINS_PREFIX} {candidate[len(WORK_REMAINS_PREFIX) :].strip()}"
     return None
 
 
