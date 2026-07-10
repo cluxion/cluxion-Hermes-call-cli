@@ -7,6 +7,7 @@ import contextlib
 import importlib.metadata
 import io
 import json
+import re
 import shutil
 import sys
 import time
@@ -19,6 +20,10 @@ from .framework import DoctorContext
 # imports moved inside probes to avoid circular import
 
 PROBES: dict[str, Callable[[DoctorContext], tuple[str, str]]] = {}
+# Require dotted numeric version (e.g. v0.16.0); optional non-space suffix ok.
+_HERMES_VERSION_RE = re.compile(r"Hermes Agent v\d+(?:\.\d+)+\S*")
+# Option token: not a substring of a longer flag; allow argparse separators.
+_OPTION_TOKEN_RE_TMPL = r"(?<![\w-]){flag}(?=[\s,=]|$)"
 
 
 def _register(name: str):
@@ -27,6 +32,27 @@ def _register(name: str):
         return fn
 
     return deco
+
+
+def _help_output(ctx: DoctorContext) -> tuple[str | None, str]:
+    """Run `hermes --help`; return (combined_text, "") or (None, fail_detail)."""
+    try:
+        result = ctx.run([ctx.hermes_bin, "--help"])
+    except Exception as e:
+        return None, f"hermes --help failed: {e}"
+    if result.returncode != 0:
+        return None, f"hermes --help exit {result.returncode}"
+    return f"{result.stdout or ''}{result.stderr or ''}", ""
+
+
+def _option_token_present(text: str, flag: str) -> bool:
+    """True when `flag` appears as an argparse option token, not a substring."""
+    pattern = _OPTION_TOKEN_RE_TMPL.format(flag=re.escape(flag))
+    return re.search(pattern, text) is not None
+
+
+def _missing_flags(text: str, flags: tuple[str, ...]) -> list[str]:
+    return [flag for flag in flags if not _option_token_present(text, flag)]
 
 
 @_register("hermes_on_path")
@@ -44,28 +70,40 @@ def hermes_binary_not_found(ctx: DoctorContext) -> tuple[str, str]:
 
 @_register("hermes_version")
 def hermes_version(ctx: DoctorContext) -> tuple[str, str]:
-    path = shutil.which(ctx.hermes_bin)
-    if path:
-        return "pass", f"{path} (version checked by doctor --live)"
-    return "fail", "not found on PATH"
+    try:
+        result = ctx.run([ctx.hermes_bin, "--version"])
+    except Exception as e:
+        return "fail", f"hermes --version failed: {e}"
+    if result.returncode != 0:
+        return "fail", f"hermes --version exit {result.returncode}"
+    text = f"{result.stdout or ''}{result.stderr or ''}"
+    match = _HERMES_VERSION_RE.search(text)
+    if not match:
+        snippet = text.strip()[:200]
+        return "fail", f"unparseable version banner: {snippet!r}"
+    return "pass", match.group(0)
 
 
 @_register("hermes_oneshot_flag")
 def hermes_oneshot_flag(ctx: DoctorContext) -> tuple[str, str]:
-    try:
-        from cluxion_hermes_call.core import CallOptions, _build_hermes_command
-
-        command = _build_hermes_command(CallOptions(prompt="x", hermes_bin=ctx.hermes_bin), prompt="x")
-        if command[:2] == [ctx.hermes_bin, "-z"]:
-            return "pass", "wrapper emits -z oneshot argv"
-        return "fail", f"oneshot argv changed: {command!r}"
-    except Exception as e:
-        return "fail", f"oneshot probe error: {e}"
+    text, err = _help_output(ctx)
+    if text is None:
+        return "fail", err
+    missing = _missing_flags(text, ("-z", "--oneshot"))
+    if missing:
+        return "fail", f"missing flags: {', '.join(missing)}"
+    return "pass", "-z/--oneshot present in --help"
 
 
 @_register("hermes_help_flags_missing")
 def hermes_help_flags_missing(ctx: DoctorContext) -> tuple[str, str]:
-    return hermes_oneshot_flag(ctx)
+    text, err = _help_output(ctx)
+    if text is None:
+        return "fail", err
+    missing = _missing_flags(text, ("-z", "--oneshot", "-t", "--toolsets"))
+    if missing:
+        return "fail", f"missing flags: {', '.join(missing)}"
+    return "pass", "-z/--oneshot and -t/--toolsets present in --help"
 
 
 @_register("entry_point_registered")
