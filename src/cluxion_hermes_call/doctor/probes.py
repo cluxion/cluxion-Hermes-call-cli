@@ -292,8 +292,8 @@ def session_cleanup_race_condition(ctx: DoctorContext) -> tuple[str, str]:
         from cluxion_hermes_call import sessions
 
         src = Path(sessions.__file__).read_text(encoding="utf-8")
-        if "started_matches" in src and "max(started_matches" in src:
-            return "pass", "same-cwd candidates tie-break by started_at then id"
+        if "select_session_by_exported_cwd" in src and "cwd_match_ambiguous" in src:
+            return "pass", "same-cwd cleanup proceeds only for an unambiguous exported cwd match"
         return "fail", "same-cwd cleanup tie-break sentinel missing"
     except Exception as e:
         return "fail", f"race probe error: {e}"

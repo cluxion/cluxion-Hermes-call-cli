@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import difflib
+import math
 import os
 import re
 import signal
@@ -180,17 +181,32 @@ def validate_call_options(options: CallOptions) -> CallResult | None:
             message=f"PROMPT is too large ({prompt_bytes} bytes).",
             hint=f"Limit is {MAX_PROMPT_BYTES} bytes because Hermes prompt passthrough uses argv; split the task or point Hermes at a file.",
         )
-    if options.timeout_seconds <= 0:
+    try:
+        # Order matters: comparisons first so -inf / +inf / huge values hit the
+        # existing bound messages; NaN falls through (comparisons are False).
+        if options.timeout_seconds <= 0:
+            return _structured_error_result(
+                error="invalid_timeout",
+                message="--timeout must be greater than 0.",
+                hint=f"Use a value between 0 and {int(MAX_TIMEOUT_SECONDS)} seconds.",
+            )
+        if options.timeout_seconds > MAX_TIMEOUT_SECONDS:
+            return _structured_error_result(
+                error="invalid_timeout",
+                message=f"--timeout must be at most {int(MAX_TIMEOUT_SECONDS)} seconds.",
+                hint="Use a bounded run and resume with --resume or --until-done if more work remains.",
+            )
+        if not math.isfinite(options.timeout_seconds):
+            return _structured_error_result(
+                error="invalid_timeout",
+                message="--timeout must be a finite number within the supported range.",
+                hint=f"Use a value between 0 and {int(MAX_TIMEOUT_SECONDS)} seconds.",
+            )
+    except (TypeError, ValueError, OverflowError):
         return _structured_error_result(
             error="invalid_timeout",
-            message="--timeout must be greater than 0.",
+            message="--timeout must be a finite number within the supported range.",
             hint=f"Use a value between 0 and {int(MAX_TIMEOUT_SECONDS)} seconds.",
-        )
-    if options.timeout_seconds > MAX_TIMEOUT_SECONDS:
-        return _structured_error_result(
-            error="invalid_timeout",
-            message=f"--timeout must be at most {int(MAX_TIMEOUT_SECONDS)} seconds.",
-            hint="Use a bounded run and resume with --resume or --until-done if more work remains.",
         )
     if options.max_iterations <= 0:
         return _structured_error_result(
@@ -725,11 +741,57 @@ def _emit_diagnostics(
 
 def sanitize_diagnostic(text: str, *, prompt: str) -> str:
     """Redact obvious secrets and the exact prompt from diagnostics."""
-    redacted = text.replace(prompt, "[prompt omitted]") if prompt else text
+    # Span union on original coordinates so partial prompt/secret overlaps never
+    # shift; emit once left-to-right. (start, end, replacement, prompt_flag)
+    spans: list[tuple[int, int, str, bool]] = []
     for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(
-            lambda match: f"{match.group(1)}{match.group(2) if len(match.groups()) > 1 else ''}[redacted]", redacted
-        )
+        for match in pattern.finditer(text):
+            replacement = (
+                f"{match.group(1)}{match.group(2) if len(match.groups()) > 1 else ''}[redacted]"
+            )
+            spans.append((match.start(), match.end(), replacement, False))
+    if prompt:
+        # Non-overlapping exact occurrences (same as str.replace-all semantics).
+        search_from = 0
+        while True:
+            idx = text.find(prompt, search_from)
+            if idx < 0:
+                break
+            end = idx + len(prompt)
+            spans.append((idx, end, "[prompt omitted]", True))
+            search_from = end
+
+    spans.sort(key=lambda s: (s[0], s[1]))
+    merged: list[tuple[int, int, str, bool]] = []
+    for start, end, replacement, prompt_flag in spans:
+        if merged and start < merged[-1][1]:
+            m_start, m_end, m_repl, m_prompt = merged[-1]
+            new_end = max(m_end, end)
+            if m_prompt or prompt_flag:
+                # Prompt-linked: omit when the union must cover prompt text
+                # (including partial overlaps that extend past a secret). A
+                # prompt fully inside an existing secret span stays redacted.
+                if m_prompt or new_end > m_end:
+                    merged[-1] = (m_start, new_end, "[prompt omitted]", True)
+                else:
+                    merged[-1] = (m_start, m_end, m_repl, False)
+            else:
+                # Pure-secret overlap: stay redacted, keep first replacement.
+                merged[-1] = (m_start, new_end, m_repl, False)
+        else:
+            merged.append((start, end, replacement, prompt_flag))
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement, _ in merged:
+        if start < cursor:
+            continue
+        parts.append(text[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(text[cursor:])
+    redacted = "".join(parts)
+
     redacted = redacted.strip()
     if len(redacted) > 4000:
         return redacted[:3997] + "..."

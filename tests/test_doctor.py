@@ -55,3 +55,18 @@ def test_contract_probes_are_registered_or_removed():
         "jobs_root_not_writable",
     ):
         assert check_map[check_id].status != "skip"
+
+
+def test_session_cleanup_race_condition_passes_against_current_sessions():
+    catalog_path = Path(__file__).parent.parent / "src" / "cluxion_hermes_call" / "doctor" / "catalog.json"
+    result = run_doctor(
+        cwd=Path.cwd(),
+        hermes_bin="hermes",
+        catalog_path=catalog_path,
+        probes=PROBES,
+        plugin="hermes-call",
+        version="0.3.11",
+    )
+    check = {c.check_id: c for c in result.checks}["session_cleanup_race_condition"]
+    assert check.status == "pass", check.detail
+    assert "unambiguous" in check.detail

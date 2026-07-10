@@ -15,7 +15,7 @@ import pytest
 
 from cluxion_hermes_call import PostHermes, api, cli, core
 from cluxion_hermes_call import plugin as hermes_plugin
-from cluxion_hermes_call.core import CallOptions, CallResult, run_call
+from cluxion_hermes_call.core import CallOptions, CallResult, run_call, validate_call_options
 from cluxion_hermes_call.doctor.framework import CheckResult, DoctorResult
 from cluxion_hermes_call.jobs import MARKER_FILE, create_job, delete_job_dir, gc_jobs
 from cluxion_hermes_call.sessions import (
@@ -165,6 +165,30 @@ def test_oversize_prompt_is_rejected_before_spawn(monkeypatch):
     payload = result.to_json_object()
     assert payload["error"] == "prompt_too_large"
     assert "262144" in payload["hint"]
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds, message_needles",
+    [
+        # NaN: must mention finite values or the supported range (not merely "greater than 0").
+        (float("nan"), ("finite", "supported range")),
+        # +inf / huge positive: must mention the upper bound.
+        (float("inf"), ("max", "at most")),
+        (10**400, ("max", "at most")),
+        # -inf: must mention greater than 0.
+        (float("-inf"), ("greater than 0",)),
+    ],
+)
+def test_validate_call_options_rejects_invalid_timeout(timeout_seconds, message_needles):
+    result = validate_call_options(CallOptions(prompt="hi", timeout_seconds=timeout_seconds))
+
+    assert result is not None
+    assert result.ok is False
+    assert result.error == "invalid_timeout"
+    message = result.message or ""
+    assert any(needle in message for needle in message_needles), (
+        f"expected one of {message_needles!r} in message {message!r}"
+    )
 
 
 def test_prompt_alias(monkeypatch, capsys):
