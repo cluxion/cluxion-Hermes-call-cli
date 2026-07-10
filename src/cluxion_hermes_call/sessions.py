@@ -322,10 +322,8 @@ def select_session_by_exported_cwd(
     if len(matches) == 1:
         match = matches[0]
         return SessionSelection(match.session_id, match.model, None)
-    started_matches = [item for item in matches if item.started_at is not None]
-    if started_matches:
-        match = max(started_matches, key=lambda item: (item.started_at or 0.0, item.session_id))
-        return SessionSelection(match.session_id, match.model, None)
+    if len(matches) > 1:
+        return SessionSelection(None, None, "cwd_match_ambiguous")
     return SessionSelection(None, None, f"cwd_match_count:{len(matches)}")
 
 

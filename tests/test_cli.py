@@ -20,6 +20,7 @@ from cluxion_hermes_call.jobs import MARKER_FILE, create_job, delete_job_dir, gc
 from cluxion_hermes_call.sessions import (
     SessionCleanupReport,
     SessionGcReport,
+    SessionSelection,
     SessionSnapshot,
     cleanup_created_session,
     default_runner,
@@ -27,6 +28,7 @@ from cluxion_hermes_call.sessions import (
     parse_relative_last_active,
     parse_session_ids_from_list,
     parse_session_list_rows,
+    select_session_by_exported_cwd,
 )
 
 
@@ -383,11 +385,42 @@ def test_session_cleanup_keeps_ambiguous_exported_cwd_matches(tmp_path):
     )
 
     assert report.cleaned is False
-    assert report.reason == "multiple_new_sessions:2;cwd_match_count:2"
+    assert report.reason == "multiple_new_sessions:2;cwd_match_ambiguous"
     assert not any(command[:3] == ["hermes", "sessions", "delete"] for command in calls)
 
 
-def test_session_cleanup_tiebreaks_same_cwd_by_started_at(tmp_path):
+def test_select_session_by_exported_cwd_refuses_ambiguous_same_cwd(tmp_path):
+    cwd = str(tmp_path)
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[:3] == ["hermes", "sessions", "export"]:
+            session_id = command[-1]
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "id": session_id,
+                        "model": "grok-4.3",
+                        "cwd": cwd,
+                        "started_at": 999.0 if session_id == "s2" else 990.0,
+                    }
+                )
+                + "\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 99, "", "unexpected")
+
+    result = select_session_by_exported_cwd(
+        ["s1", "s2"],
+        expected_cwd=tmp_path,
+        runner=runner,
+    )
+
+    assert result == SessionSelection(None, None, "cwd_match_ambiguous")
+
+
+def test_session_cleanup_refuses_same_cwd_even_with_started_at(tmp_path):
     calls: list[list[str]] = []
 
     def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -420,9 +453,10 @@ def test_session_cleanup_tiebreaks_same_cwd_by_started_at(tmp_path):
         expected_cwd=tmp_path,
     )
 
-    assert report.cleaned is True
-    assert report.session_id == "20260612_120000_bbbb02"
-    assert ["hermes", "sessions", "delete", "--yes", "20260612_120000_bbbb02"] in calls
+    assert report.cleaned is False
+    assert report.session_id is None
+    assert report.reason == "multiple_new_sessions:2;cwd_match_ambiguous"
+    assert not any(command[:3] == ["hermes", "sessions", "delete"] for command in calls)
 
 
 def test_session_cleanup_keeps_when_candidate_export_fails(tmp_path):
