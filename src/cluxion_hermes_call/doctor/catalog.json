@@ -156,16 +156,19 @@
     "check_id": "doctor_gc_magic_safe",
     "category": "handler",
     "severity": "medium",
-    "what_it_checks": "'doctor'/'gc' positional only triggers magic subcommands for a bare invocation (no prompt-shaping flags)",
-    "failure_symptom": "`hermes call --ask doctor` runs the doctor instead of asking the model",
+    "what_it_checks": "'doctor'/'gc' magic only when call/model controls stay at parser defaults; doctor may still take --json/--live/--timeout, gc is truly bare only",
+    "failure_symptom": "`hermes call --ask doctor` or `hermes call doctor --model X` runs doctor; or `hermes call doctor --json` skips doctor; or non-bare `gc` still GCs",
     "likely_causes": [
-      "magic routing fired on args.prompt regardless of other flags"
+      "magic routing fired on args.prompt regardless of call controls",
+      "--json incorrectly treated as doctor-blocking",
+      "gc magic ignored live/timeout/model/cwd/keep/resume"
     ],
     "fix_steps": [
-      "Gate doctor/gc routing on absence of ask/prompt_alias/toolsets/json/until_done/sandbox"
+      "Gate doctor on call-control defaults; allow only doctor-branch controls (--json/--live/--timeout)",
+      "Gate gc on call-control defaults plus json=false, live=false, timeout=None"
     ],
-    "change_robust": "Exercises the routing with --ask present and asserts the model path is taken",
-    "detection_method": "magic words gated by no-other-flag condition"
+    "change_robust": "Behavioral helper checks: doctor allows branch controls, rejects model; gc bare-only rejects json/live/timeout/model",
+    "detection_method": "explicit eligibility helpers; doctor allows branch controls, gc bare-only"
   },
   {
     "check_id": "hermes_binary_not_found",

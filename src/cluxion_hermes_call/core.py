@@ -178,7 +178,14 @@ def validate_call_options(options: CallOptions) -> CallResult | None:
     prompt = _wrap_until_done_prompt(options.prompt) if options.until_done else options.prompt
     if options.ask:
         prompt = ASK_MODE_PREFACE + prompt
-    prompt_bytes = len(prompt.encode("utf-8"))
+    try:
+        prompt_bytes = len(prompt.encode("utf-8"))
+    except UnicodeEncodeError:
+        return _structured_error_result(
+            error="invalid_prompt",
+            message="PROMPT contains code points that cannot be encoded as UTF-8.",
+            hint="Pass well-formed Unicode text; repair surrogateescape/binary input before invoking hermes-call.",
+        )
     if prompt_bytes >= MAX_PROMPT_BYTES:
         return _structured_error_result(
             error="prompt_too_large",
@@ -233,6 +240,23 @@ def validate_call_options(options: CallOptions) -> CallResult | None:
     return None
 
 
+def _resolve_call_cwd(cwd: Path | None) -> Path | CallResult:
+    """Resolve cwd and require a usable directory before any process side effect."""
+    try:
+        if cwd is None:
+            cwd = Path.cwd()
+        resolved = cwd.expanduser().resolve(strict=False)
+        if resolved.is_dir():
+            return resolved
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return _structured_error_result(
+        error="invalid_cwd",
+        message="cwd cannot be resolved as a usable working directory.",
+        hint="Pass an existing directory without circular symlinks or other unresolvable components.",
+    )
+
+
 def run_call(options: CallOptions) -> CallResult:
     """Run Hermes once, clean up its session and sandbox when safe."""
     validation_error = validate_call_options(options)
@@ -251,9 +275,10 @@ def run_call(options: CallOptions) -> CallResult:
         except JobRootUnwritableError as exc:
             return _sandbox_error_result(exc)
         cwd = job.work
-    elif cwd is None:
-        cwd = Path.cwd()
-    cwd = cwd.expanduser().resolve(strict=False)
+    resolved = _resolve_call_cwd(cwd)
+    if isinstance(resolved, CallResult):
+        return resolved
+    cwd = resolved
 
     # A resumed session belongs to the user; hermes-call must never GC it.
     owns_session = not options.keep_session and options.resume_session is None
@@ -402,9 +427,10 @@ def _run_until_done_call(options: CallOptions) -> CallResult:
         except JobRootUnwritableError as exc:
             return _sandbox_error_result(exc)
         cwd = job.work
-    elif cwd is None:
-        cwd = Path.cwd()
-    cwd = cwd.expanduser().resolve(strict=False)
+    resolved = _resolve_call_cwd(cwd)
+    if isinstance(resolved, CallResult):
+        return resolved
+    cwd = resolved
 
     before = capture_session_ids(hermes_bin=options.hermes_bin)
     first_prompt = _wrap_until_done_prompt(options.prompt)

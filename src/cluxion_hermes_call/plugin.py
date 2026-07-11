@@ -91,29 +91,59 @@ def register(ctx: object) -> None:
         )
 
 
+_DEFAULT_MAX_ITERATIONS = 8
+
+
 def _setup_call_parser(parser: argparse.ArgumentParser) -> None:
     parser.epilog = default_model_help_line()
     add_call_arguments(parser)
     parser.add_argument("--live", action="store_true", help="With `doctor`, run one tiny live --ask round-trip")
 
 
+def _call_controls_at_defaults(args: argparse.Namespace) -> bool:
+    """True when call/model controls are still at parser defaults."""
+    return (
+        getattr(args, "prompt_alias", None) is None
+        and getattr(args, "model", None) is None
+        and not getattr(args, "ask", False)
+        and getattr(args, "cwd", None) is None
+        and not getattr(args, "sandbox", False)
+        and not getattr(args, "until_done", False)
+        and not getattr(args, "keep_session", False)
+        and not getattr(args, "keep", False)
+        and getattr(args, "toolsets", None) is None
+        and getattr(args, "resume_session", None) is None
+        and getattr(args, "max_iterations", _DEFAULT_MAX_ITERATIONS) == _DEFAULT_MAX_ITERATIONS
+    )
+
+
+def _doctor_magic_eligible(args: argparse.Namespace) -> bool:
+    """Hosted doctor magic may consume only doctor-branch controls at call-control defaults."""
+    return getattr(args, "prompt", None) == "doctor" and _call_controls_at_defaults(args)
+
+
+def _gc_magic_eligible(args: argparse.Namespace) -> bool:
+    """Hosted GC magic is eligible only when the invocation is truly bare."""
+    return (
+        getattr(args, "prompt", None) == "gc"
+        and _call_controls_at_defaults(args)
+        and not getattr(args, "json", False)
+        and not getattr(args, "live", False)
+        and getattr(args, "timeout", None) is None
+    )
+
+
 def _handle_call_command(args: argparse.Namespace) -> int:
     if getattr(args, "version", False):
         print(f"hermes-call {__version__}")
         return 0
-    prompt = getattr(args, "prompt", None)
-    prompt_alias = getattr(args, "prompt_alias", None)
-    ask = getattr(args, "ask", False)
-    toolsets = getattr(args, "toolsets", None)
-    json_mode = getattr(args, "json", False)
-    until_done = getattr(args, "until_done", False)
-    sandbox = getattr(args, "sandbox", False)
-    shaping = bool(prompt_alias or ask or toolsets or json_mode or until_done or sandbox)
-    if prompt == "gc" and not shaping:
+    # Doctor magic may use --json/--live/--timeout; GC magic is bare-only.
+    # Non-default call/model controls always take the normal model path.
+    if _gc_magic_eligible(args):
         removed, kept = gc_jobs()
         print(f"removed={removed} kept={kept}")
         return 0
-    if prompt == "doctor" and not shaping:
+    if _doctor_magic_eligible(args):
         from importlib.resources import files
         from pathlib import Path
 

@@ -155,6 +155,24 @@ def test_json_rejects_null_byte_prompt_before_spawn(capsys):
     assert captured.err == ""
 
 
+def test_json_surrogateescape_stdin_is_structured_invalid_prompt(monkeypatch, capsys):
+    """Surrogate code points (e.g. from surrogateescape) must not raise during UTF-8 size calc."""
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
+    # U+DCFF is a lone surrogate; TextIO returns it as a Python str (no decode error on read).
+    stdin = io.StringIO("hello\udcffworld")
+
+    assert cli.main(["-", "--json", "--keep-session"], stdin=stdin) == 2
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_prompt"
+    assert payload["exit_code"] == 2
+    assert payload["message"]
+    assert payload["hint"]
+    assert captured.err == ""
+
+
 def test_oversize_prompt_is_rejected_before_spawn(monkeypatch):
     monkeypatch.setattr(core.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Popen should not start"))
 
@@ -281,6 +299,38 @@ def test_plugin_doctor_command_wires_to_doctor(monkeypatch, capsys):
     ns = argparse.Namespace(version=False, prompt="doctor", prompt_alias=None, json=False, live=False, timeout=120.0)
     assert hermes_plugin._handle_call_command(ns) == 0
     assert json.loads(capsys.readouterr().err)["ok"] is True
+
+
+def test_plugin_doctor_json_stays_on_doctor_path(monkeypatch, capsys):
+    """Bare `hermes call doctor --json` runs embedded doctor; --json is serialization only."""
+    doctor_called = {"n": 0}
+
+    def fake_doctor(**kw):
+        doctor_called["n"] += 1
+        return DoctorResult(plugin="hermes-call", version="0.3.22", checks=())
+
+    monkeypatch.setattr(hermes_plugin, "framework_run_doctor", fake_doctor)
+    monkeypatch.setattr(
+        hermes_plugin, "run_call", lambda options: pytest.fail("run_call must not start for doctor --json")
+    )
+    ns = argparse.Namespace(
+        version=False,
+        prompt="doctor",
+        prompt_alias=None,
+        json=True,
+        live=False,
+        timeout=120.0,
+        ask=False,
+        toolsets=None,
+        until_done=False,
+        sandbox=False,
+    )
+    assert hermes_plugin._handle_call_command(ns) == 0
+    assert doctor_called["n"] == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is True
+    assert captured.err == ""
 
 
 def _completed(command: list[str], returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -1340,6 +1390,79 @@ def test_nul_in_cwd_rejected_before_popen_or_session_capture(monkeypatch):
     assert payload["hint"]
 
 
+@pytest.mark.parametrize("until_done", [False, True])
+def test_symlink_loop_cwd_rejected_before_side_effects(tmp_path, monkeypatch, until_done):
+    """Cyclic-symlink cwd must return structured invalid_cwd before any side effects."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
+    monkeypatch.setattr(core, "capture_session_ids", lambda **k: pytest.fail("capture_session_ids should not run"))
+    monkeypatch.setattr(core, "create_job", lambda **k: pytest.fail("create_job should not run"))
+
+    result = run_call(CallOptions(prompt="hi", cwd=a, until_done=until_done, keep_session=True))
+
+    assert result.ok is False
+    assert result.exit_code == 2
+    assert result.error == "invalid_cwd"
+    assert result.status == "invalid_cwd"
+    payload = result.to_json_object()
+    assert payload["error"] == "invalid_cwd"
+    assert payload["message"]
+    assert payload["hint"]
+
+
+@pytest.mark.parametrize("until_done", [False, True])
+@pytest.mark.parametrize("cwd_kind", ["missing", "file"])
+def test_non_directory_cwd_is_structured_invalid_cwd_before_side_effects(tmp_path, monkeypatch, until_done, cwd_kind):
+    """Missing paths and regular files are invalid working directories, not process failures."""
+    cwd = tmp_path / cwd_kind
+    if cwd_kind == "file":
+        cwd.write_text("not a directory\n", encoding="utf-8")
+
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
+    monkeypatch.setattr(core, "capture_session_ids", lambda **k: pytest.fail("capture_session_ids should not run"))
+
+    result = run_call(CallOptions(prompt="hi", cwd=cwd, until_done=until_done, keep_session=True))
+
+    assert result.ok is False
+    assert result.exit_code == 2
+    assert result.error == "invalid_cwd"
+    assert result.status == "invalid_cwd"
+    assert result.to_json_object()["error"] == "invalid_cwd"
+
+
+@pytest.mark.parametrize("until_done", [False, True])
+def test_deleted_process_cwd_with_none_is_structured_invalid_cwd(tmp_path, monkeypatch, until_done):
+    """When process cwd is deleted and options.cwd is None, return invalid_cwd rc2 (not raw FileNotFoundError)."""
+    import tempfile
+
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
+    monkeypatch.setattr(core, "capture_session_ids", lambda **k: pytest.fail("capture_session_ids should not run"))
+    monkeypatch.setattr(core, "create_job", lambda **k: pytest.fail("create_job should not run"))
+
+    saved_fd = os.open(".", os.O_RDONLY)
+    doomed = tempfile.mkdtemp(prefix="hermes-call-deleted-cwd-", dir=tmp_path)
+    try:
+        os.chdir(doomed)
+        os.rmdir(doomed)
+        result = run_call(CallOptions(prompt="hi", cwd=None, until_done=until_done, keep_session=True))
+    finally:
+        os.fchdir(saved_fd)
+        os.close(saved_fd)
+
+    assert result.ok is False
+    assert result.exit_code == 2
+    assert result.error == "invalid_cwd"
+    assert result.status == "invalid_cwd"
+    payload = result.to_json_object()
+    assert payload["error"] == "invalid_cwd"
+    assert payload["message"]
+    assert payload["hint"]
+
+
 def test_nul_in_hermes_bin_rejected_before_popen_or_session_capture(monkeypatch):
     monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
     monkeypatch.setattr(core, "capture_session_ids", lambda **k: pytest.fail("capture_session_ids should not run"))
@@ -1779,3 +1902,176 @@ def test_gc_ended_at_is_activity_not_immediate_delete(monkeypatch):
     assert recent_id in list_report.skipped_recent_ids
     assert stale_id in list_report.deleted_ids
     assert deleted == [stale_id]
+
+
+# --- Regression: hosted magic must not silently consume call-only flags ---
+
+
+def _hosted_call_ns(prompt: str, **overrides: object) -> argparse.Namespace:
+    """Namespace with hosted-call defaults; override only the fields under test."""
+    base: dict[str, object] = {
+        "version": False,
+        "prompt": prompt,
+        "prompt_alias": None,
+        "model": None,
+        "ask": False,
+        "cwd": None,
+        "sandbox": False,
+        "json": False,
+        "timeout": None,
+        "until_done": False,
+        "max_iterations": 8,
+        "keep_session": False,
+        "keep": False,
+        "toolsets": None,
+        "resume_session": None,
+        "live": False,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"json": True},
+        {"live": True},
+        {"timeout": 45.0},
+        {"json": True, "live": True, "timeout": 45.0},
+    ],
+    ids=["bare", "json", "live", "timeout", "json+live+timeout"],
+)
+def test_plugin_doctor_magic_eligible_only_at_call_control_defaults(monkeypatch, overrides):
+    """Doctor magic may accept json/live/timeout, but only when call controls stay default."""
+    doctor_calls = {"n": 0}
+
+    def fake_doctor(**kw):
+        doctor_calls["n"] += 1
+        return DoctorResult(plugin="hermes-call", version="0.3.22", checks=())
+
+    monkeypatch.setattr(hermes_plugin, "framework_run_doctor", fake_doctor)
+    monkeypatch.setattr(hermes_plugin, "live_checks", lambda t: [])
+    monkeypatch.setattr(
+        hermes_plugin, "run_call", lambda options: pytest.fail("run_call must not start for doctor magic")
+    )
+    monkeypatch.setattr(hermes_plugin, "gc_jobs", lambda: pytest.fail("gc magic must not run for doctor"))
+
+    assert hermes_plugin._handle_call_command(_hosted_call_ns("doctor", **overrides)) == 0
+    assert doctor_calls["n"] == 1
+
+
+def test_plugin_gc_magic_only_when_truly_bare(monkeypatch, capsys):
+    monkeypatch.setattr(hermes_plugin, "gc_jobs", lambda: (1, 2))
+    monkeypatch.setattr(
+        hermes_plugin, "framework_run_doctor", lambda **kw: pytest.fail("doctor must not run for bare gc")
+    )
+    monkeypatch.setattr(hermes_plugin, "run_call", lambda options: pytest.fail("run_call must not start for bare gc"))
+
+    assert hermes_plugin._handle_call_command(_hosted_call_ns("gc")) == 0
+    assert "removed=1 kept=2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model": "custom"},
+        {"cwd": "/tmp/other"},
+        {"keep_session": True},
+        {"keep": True},
+        {"resume_session": "session-1"},
+        {"max_iterations": 3},
+        {"json": True, "model": "custom"},  # reproduced: doctor --json --model custom
+    ],
+    ids=["model", "cwd", "keep_session", "keep", "resume_session", "max_iterations", "json+model"],
+)
+def test_plugin_doctor_magic_skips_nondefault_call_controls(monkeypatch, overrides):
+    """Call-only flags must force the model path; magic must not silently consume them."""
+    monkeypatch.setattr(
+        hermes_plugin, "framework_run_doctor", lambda **kw: pytest.fail("doctor magic must not consume call-only flags")
+    )
+    monkeypatch.setattr(hermes_plugin, "gc_jobs", lambda: pytest.fail("gc magic must not run"))
+    monkeypatch.setattr(hermes_plugin, "live_checks", lambda t: pytest.fail("live checks must not start"))
+
+    seen: dict[str, CallOptions] = {}
+
+    def fake_run_call(options: CallOptions) -> CallResult:
+        seen["options"] = options
+        return CallResult(True, "ok", None, 1, True, 0)
+
+    monkeypatch.setattr(hermes_plugin, "run_call", fake_run_call)
+
+    try:
+        code = hermes_plugin._handle_call_command(_hosted_call_ns("doctor", **overrides))
+    except SystemExit as exc:
+        # e.g. --keep without --sandbox still proves magic did not fire
+        assert int(exc.code) == 2
+        return
+
+    assert code == 0
+    assert "options" in seen
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model": "custom"},
+        {"cwd": "/tmp/other"},
+        {"keep_session": True},
+        {"keep": True},
+        {"resume_session": "session-1"},
+        {"max_iterations": 3},
+        {"resume_session": "session-1", "live": True},  # reproduced: gc --resume session-1 --live
+    ],
+    ids=["model", "cwd", "keep_session", "keep", "resume_session", "max_iterations", "resume+live"],
+)
+def test_plugin_gc_magic_skips_when_not_truly_bare(monkeypatch, overrides):
+    """GC magic is bare-only; any call control / live / non-default must not delete or GC."""
+    monkeypatch.setattr(hermes_plugin, "gc_jobs", lambda: pytest.fail("gc magic must not run when not bare"))
+    monkeypatch.setattr(
+        hermes_plugin, "framework_run_doctor", lambda **kw: pytest.fail("doctor magic must not run for gc")
+    )
+
+    seen: dict[str, CallOptions] = {}
+
+    def fake_run_call(options: CallOptions) -> CallResult:
+        seen["options"] = options
+        return CallResult(True, "ok", None, 1, True, 0)
+
+    monkeypatch.setattr(hermes_plugin, "run_call", fake_run_call)
+
+    try:
+        code = hermes_plugin._handle_call_command(_hosted_call_ns("gc", **overrides))
+    except SystemExit as exc:
+        # e.g. --live only valid with doctor; still proves gc_jobs was not invoked
+        assert int(exc.code) == 2
+        return
+
+    assert code == 0
+    assert "options" in seen
+
+
+# --- Regression: surrogate cwd must be structured invalid_cwd (no spawn) ---
+
+
+@pytest.mark.parametrize("until_done", [False, True], ids=["oneshot", "until_done"])
+def test_surrogate_cwd_is_structured_invalid_cwd_without_spawn(monkeypatch, until_done):
+    """Lone-surrogate cwd must not raise; return invalid_cwd rc2 on both call routes."""
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: pytest.fail("Popen should not start"))
+    monkeypatch.setattr(core, "capture_session_ids", lambda **k: pytest.fail("capture_session_ids should not run"))
+    monkeypatch.setattr(core, "create_job", lambda **k: pytest.fail("create_job should not run"))
+
+    try:
+        result = run_call(CallOptions(prompt="hi", cwd=Path("\ud800"), until_done=until_done, keep_session=True))
+    except Exception as exc:
+        pytest.fail(f"expected structured invalid_cwd CallResult, raised {type(exc).__name__}: {exc}")
+
+    assert result.ok is False
+    assert result.exit_code == 2
+    assert result.error == "invalid_cwd"
+    assert result.status == "invalid_cwd"
+    payload = result.to_json_object()
+    assert payload["error"] == "invalid_cwd"
+    assert payload["exit_code"] == 2
+    assert payload["message"]
+    assert payload["hint"]

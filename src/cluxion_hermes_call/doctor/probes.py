@@ -222,14 +222,48 @@ def ask_mode_honesty(ctx: DoctorContext) -> tuple[str, str]:
 @_register("doctor_gc_magic_safe")
 def doctor_gc_magic_safe(ctx: DoctorContext) -> tuple[str, str]:
     try:
+        import argparse
+
         from cluxion_hermes_call import plugin
 
-        src = ""
-        if hasattr(plugin, "__file__"):
-            src = Path(plugin.__file__).read_text()
-        if "shaping = bool" in src and 'if prompt == "doctor" and not shaping' in src:
-            return "pass", "magic gate on shaping present"
-        return "fail", "shaping gate missing in _handle_call_command"
+        def _ns(prompt: str, **overrides: object) -> argparse.Namespace:
+            base: dict[str, object] = {
+                "prompt": prompt,
+                "prompt_alias": None,
+                "model": None,
+                "ask": False,
+                "cwd": None,
+                "sandbox": False,
+                "until_done": False,
+                "keep_session": False,
+                "keep": False,
+                "toolsets": None,
+                "resume_session": None,
+                "max_iterations": 8,
+                "json": False,
+                "live": False,
+                "timeout": None,
+            }
+            base.update(overrides)
+            return argparse.Namespace(**base)
+
+        # Doctor may consume branch controls when call controls stay default.
+        if not plugin._doctor_magic_eligible(_ns("doctor", json=True, live=True, timeout=45.0)):
+            return "fail", "doctor magic rejects doctor-branch controls (json/live/timeout)"
+        if plugin._doctor_magic_eligible(_ns("doctor", model="custom", json=True)):
+            return "fail", "doctor magic still consumes non-default call controls"
+        # GC is bare-only: call defaults plus json/live/timeout still default.
+        if not plugin._gc_magic_eligible(_ns("gc")):
+            return "fail", "gc magic rejects bare invocation"
+        if plugin._gc_magic_eligible(_ns("gc", json=True)):
+            return "fail", "gc magic still allows --json"
+        if plugin._gc_magic_eligible(_ns("gc", live=True)):
+            return "fail", "gc magic still allows --live"
+        if plugin._gc_magic_eligible(_ns("gc", timeout=30.0)):
+            return "fail", "gc magic still allows --timeout"
+        if plugin._gc_magic_eligible(_ns("gc", model="custom")):
+            return "fail", "gc magic still consumes non-default call controls"
+        return "pass", "magic helpers: doctor allows branch controls, gc bare-only"
     except Exception as e:
         return "skip", f"cannot inspect: {e}"
 
