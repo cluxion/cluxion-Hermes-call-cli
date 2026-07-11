@@ -352,7 +352,7 @@ def _run_hermes_process_with_prompt(
         return HermesProcessResult(stdout="", stderr="overall timeout exceeded", returncode=124, timed_out=True)
     command = _build_hermes_command(options, prompt=prompt, resume_session_id=resume_session_id)
     try:
-        process = subprocess.Popen(
+        process = _spawn_detached(
             command,
             cwd=str(cwd),
             env=_child_env(),
@@ -362,12 +362,10 @@ def _run_hermes_process_with_prompt(
             text=True,
             encoding="utf-8",
             errors="replace",
-            start_new_session=True,
         )
     except (OSError, ValueError) as exc:
         return HermesProcessResult(stdout="", stderr=f"failed to start hermes: {exc}", returncode=2, timed_out=False)
 
-    _register_child(process.pid)
     try:
         # CPython communicate() drains stdout/stderr together, so a chatty
         # child cannot pipe-deadlock us while we wait for process exit.
@@ -678,43 +676,58 @@ _live_processes_lock = threading.RLock()
 _atexit_registered = False
 _installed_signal_hooks: set[int] = set()
 _signal_cleanup_active = False
+# Process-global spawn protocol: close the Popen→register gap under signals.
+_pending_spawns = 0
+_terminating = False
+_deferred_signal: tuple[int, object] | None = None
+# Test-only hook invoked after successful Popen, before PID registration.
+_spawn_gap_hook = None
 
 
-def _register_child(pid: int) -> None:
-    """Track the child's process group so parent death cannot orphan it.
-
-    start_new_session=True detaches hermes from our signals on purpose (we
-    manage its lifetime), which also means Ctrl-C on hermes-call alone would
-    leave the group running forever. SIGINT/SIGTERM/atexit now reap it.
+def _install_orphan_hooks() -> bool:
+    """Install atexit + SIGINT/SIGTERM hooks (idempotent; safe to call often).
 
     Track installed signums separately: a transient failure on one signal must
-    not prevent later registrations from installing the other. atexit is still
-    registered once.
+    not prevent later attempts from installing the other. atexit is registered once.
     """
     global _atexit_registered
     with _live_processes_lock:
-        _live_processes.add(pid)
         if not _atexit_registered:
             atexit.register(_reap_live_processes)
             _atexit_registered = True
         missing = [signum for signum in (signal.SIGINT, signal.SIGTERM) if signum not in _installed_signal_hooks]
     if not missing:
-        return
+        return True
 
     for signum in missing:
         previous = signal.getsignal(signum)
 
         def _handler(signo: int, frame: object, _previous=previous) -> None:
+            global _terminating, _deferred_signal
+            with _live_processes_lock:
+                _terminating = True
+                if _pending_spawns > 0:
+                    # Defer until the last pending spawn registers (or fails).
+                    if _deferred_signal is None:
+                        _deferred_signal = (signo, frame)
+                    return
             # Only the cleanup owner may propagate/default the signal.
             # A nested reentry during TERM grace returns False and must not
             # kill the parent before the owner finishes KILL/reap.
             if not _reap_live_processes():
                 return
             if callable(_previous):
-                _previous(signo, frame)
+                try:
+                    _previous(signo, frame)
+                finally:
+                    with _live_processes_lock:
+                        _terminating = False
             elif _previous == signal.SIG_IGN:
+                with _live_processes_lock:
+                    _terminating = False
                 return
             else:
+                # Deferred delivery is re-signalled, so this always runs on main.
                 signal.signal(signo, signal.SIG_DFL)
                 os.kill(os.getpid(), signo)
 
@@ -724,6 +737,63 @@ def _register_child(pid: int) -> None:
             continue
         with _live_processes_lock:
             _installed_signal_hooks.add(signum)
+    with _live_processes_lock:
+        return {signal.SIGINT, signal.SIGTERM}.issubset(_installed_signal_hooks)
+
+
+def _register_child(pid: int) -> None:
+    """Track the child's process group so parent death cannot orphan it.
+
+    start_new_session=True detaches hermes from our signals on purpose (we
+    manage its lifetime), which also means Ctrl-C on hermes-call alone would
+    leave the group running forever. SIGINT/SIGTERM/atexit now reap it.
+    """
+    _install_orphan_hooks()
+    with _live_processes_lock:
+        _live_processes.add(pid)
+
+
+def _spawn_detached(command: list[str], **popen_kwargs: object) -> subprocess.Popen[str]:
+    """Spawn a detached child under the process-global orphan-safe protocol.
+
+    Install hooks first, bump a pending-spawn counter, Popen, register PID, then
+    drop the counter. SIGTERM/SIGINT while pending>0 is deferred and re-delivered
+    when the last pending spawn completes so every registered child is reaped.
+    After a termination signal, further spawns are rejected.
+    """
+    global _pending_spawns, _deferred_signal
+    popen_kwargs = dict(popen_kwargs)
+    popen_kwargs["start_new_session"] = True
+    with _live_processes_lock:
+        if _terminating:
+            raise OSError("spawn rejected: process is terminating")
+    if not _install_orphan_hooks():
+        raise OSError("detached spawn requires main-thread signal hook initialization")
+    with _live_processes_lock:
+        if _terminating:
+            raise OSError("spawn rejected: process is terminating")
+        _pending_spawns += 1
+    try:
+        process = subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
+        hook = _spawn_gap_hook
+        if hook is not None:
+            hook(process)
+        _register_child(process.pid)
+        return process
+    finally:
+        deferred: tuple[int, object] | None = None
+        with _live_processes_lock:
+            _pending_spawns -= 1
+            if _pending_spawns == 0 and _deferred_signal is not None:
+                deferred = _deferred_signal
+                _deferred_signal = None
+        if deferred is not None:
+            _redeliver_deferred_signal(deferred[0], deferred[1])
+
+
+def _redeliver_deferred_signal(signo: int, _frame: object) -> None:
+    """Re-signal the process so Python dispatches the handler on the main thread."""
+    os.kill(os.getpid(), signo)
 
 
 def _unregister_child(pid: int) -> None:

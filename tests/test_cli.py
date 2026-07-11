@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -641,6 +642,59 @@ def test_deletion_gate_refuses_live_foreign_pid(tmp_path):
     assert job.root.exists()
 
 
+# --- Cycle 108 HC: create_job marker write failure cleanup ---
+
+
+def test_create_job_marker_write_failure_cleans_created_dir_and_reraises(tmp_path, monkeypatch):
+    """mkdir-then-marker failure must best-effort remove the created UUID path and re-raise."""
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    real_write_text = Path.write_text
+
+    def boom(self, *args, **kwargs):
+        if self.name == MARKER_FILE:
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    with pytest.raises(OSError, match="disk full"):
+        create_job(jobs_root=jobs_root)
+    assert list(jobs_root.iterdir()) == [], "markerless never-GC dir must be cleaned"
+
+
+def test_create_job_keyboard_interrupt_during_marker_cleans_created_dir(tmp_path, monkeypatch):
+    """Catchable control-flow interrupts must not strand a markerless UUID directory."""
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    real_write_text = Path.write_text
+
+    def interrupt(self, *args, **kwargs):
+        if self.name == MARKER_FILE:
+            raise KeyboardInterrupt
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        create_job(jobs_root=jobs_root)
+    assert list(jobs_root.iterdir()) == []
+
+
+def test_create_job_conflict_path_not_cleaned(tmp_path, monkeypatch):
+    """Pre-existing/conflict UUID path must never be removed on create failure."""
+    jobs_root = tmp_path / "jobs"
+    jobs_root.mkdir()
+    fixed = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    conflict = jobs_root / fixed
+    conflict.mkdir()
+    (conflict / "precious").write_text("keep", encoding="utf-8")
+    import cluxion_hermes_call.jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod.uuid, "uuid4", lambda: uuid.UUID(fixed))
+    with pytest.raises(FileExistsError):
+        create_job(jobs_root=jobs_root)
+    assert (conflict / "precious").read_text(encoding="utf-8") == "keep"
+
+
 def test_timeout_kills_fake_hermes_process(tmp_path):
     fake = tmp_path / "fake-hermes"
     fake.write_text(
@@ -713,7 +767,8 @@ def test_session_default_runner_times_out_and_returns_completed_process(monkeypa
 
     monkeypatch.setenv("CLUXION_HERMES_CALL_SESSION_TIMEOUT", "0.5")
     monkeypatch.setattr("cluxion_hermes_call.sessions.subprocess.run", lambda *a, **k: pytest.fail("use Popen"))
-    monkeypatch.setattr("cluxion_hermes_call.sessions.subprocess.Popen", lambda *a, **k: SlowProcess())
+    # default_runner goes through core._spawn_detached → core.subprocess.Popen
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **k: SlowProcess())
     monkeypatch.setattr(core.os, "killpg", lambda pid, sig: None)
 
     completed = default_runner(["hermes", "sessions", "list"])

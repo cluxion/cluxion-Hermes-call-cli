@@ -119,17 +119,27 @@ def test_sigterm_reaps_session_snapshot_process_group(tmp_path) -> None:
             parent.kill()
 
 
-def _reset_child_registry() -> tuple[set[int], set[int], bool, bool]:
+def _reset_child_registry() -> tuple:
     with core._live_processes_lock:
-        saved_pids = set(core._live_processes)
-        saved_installed = set(core._installed_signal_hooks)
-        saved_atexit = core._atexit_registered
-        saved_active = core._signal_cleanup_active
+        saved = (
+            set(core._live_processes),
+            set(core._installed_signal_hooks),
+            core._atexit_registered,
+            core._signal_cleanup_active,
+            core._pending_spawns,
+            core._terminating,
+            core._deferred_signal,
+            core._spawn_gap_hook,
+        )
         core._live_processes.clear()
         core._installed_signal_hooks.clear()
         core._atexit_registered = False
         core._signal_cleanup_active = False
-    return saved_pids, saved_installed, saved_atexit, saved_active
+        core._pending_spawns = 0
+        core._terminating = False
+        core._deferred_signal = None
+        core._spawn_gap_hook = None
+    return saved
 
 
 def _restore_child_registry(
@@ -137,6 +147,10 @@ def _restore_child_registry(
     saved_installed: set[int],
     saved_atexit: bool,
     saved_active: bool,
+    saved_pending: int = 0,
+    saved_terminating: bool = False,
+    saved_deferred=None,
+    saved_gap_hook=None,
 ) -> None:
     with core._live_processes_lock:
         core._live_processes.clear()
@@ -145,6 +159,10 @@ def _restore_child_registry(
         core._installed_signal_hooks.update(saved_installed)
         core._atexit_registered = saved_atexit
         core._signal_cleanup_active = saved_active
+        core._pending_spawns = saved_pending
+        core._terminating = saved_terminating
+        core._deferred_signal = saved_deferred
+        core._spawn_gap_hook = saved_gap_hook
 
 
 def test_worker_thread_registration_does_not_mark_hooks_when_signal_fails() -> None:
@@ -243,6 +261,7 @@ def test_signal_hook_preserves_previous_sig_ign() -> None:
                 handler(signal.SIGTERM, None)
             reap.assert_called_once_with()
             kill.assert_not_called()
+            assert core._terminating is False
     finally:
         _restore_child_registry(*saved)
 
@@ -539,3 +558,230 @@ def test_reap_reentry_returns_immediately() -> None:
     with core._live_processes_lock:
         core._live_processes.discard(999001)
         assert core._signal_cleanup_active is False
+
+
+# --- Cycle 108 HC: process-global spawn protocol (Popen→register gap) ---
+
+
+def _wait_dead(pid: int, *, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_sigterm_during_single_pending_spawn_reaps_child(tmp_path) -> None:
+    """Actual SIGTERM in the forced single-spawn gap must not leave an orphan child."""
+    ready = tmp_path / "ready"
+    child_pid_file = tmp_path / "child.pid"
+    parent_script = textwrap.dedent(
+        f"""
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        from cluxion_hermes_call import core
+
+        ready = Path({str(ready)!r})
+        child_pid_file = Path({str(child_pid_file)!r})
+
+        def gap_hook(proc):
+            child_pid_file.write_text(str(proc.pid), encoding="utf-8")
+            ready.write_text("in-gap", encoding="utf-8")
+            # Hold the critical section until SIGTERM is deferred (terminating latch).
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                with core._live_processes_lock:
+                    if core._terminating:
+                        return
+                time.sleep(0.05)
+
+        core._spawn_gap_hook = gap_hook
+        core._spawn_detached(
+            [sys.executable, "-c", "import time; time.sleep(300)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+        time.sleep(60)
+        """
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_script],
+        cwd=str(tmp_path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    child_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not ready.exists():
+            time.sleep(0.05)
+        assert ready.exists(), "parent never entered spawn gap"
+        child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        assert child_pid != parent.pid
+
+        parent.send_signal(signal.SIGTERM)
+        parent.wait(timeout=15)
+
+        assert _wait_dead(child_pid, timeout=5), f"child {child_pid} survived SIGTERM during spawn gap"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=2)
+        if child_pid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(child_pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(child_pid, signal.SIGKILL)
+
+
+def test_sigterm_during_two_pending_spawns_reaps_both_children(tmp_path) -> None:
+    """Two overlapping pending spawns must both register before deferred SIGTERM reaps them."""
+    ready = tmp_path / "ready"
+    pids_file = tmp_path / "children.pids"
+    parent_script = textwrap.dedent(
+        f"""
+        import subprocess
+        import sys
+        import threading
+        import time
+        from pathlib import Path
+
+        from cluxion_hermes_call import core
+
+        ready = Path({str(ready)!r})
+        pids_file = Path({str(pids_file)!r})
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        pids: list[int] = []
+
+        def gap_hook(proc):
+            with lock:
+                pids.append(proc.pid)
+                if len(pids) == 2:
+                    pids_file.write_text("\\n".join(str(p) for p in pids), encoding="utf-8")
+                    ready.write_text("two-pending", encoding="utf-8")
+            barrier.wait(timeout=10)
+            # Keep both critical sections open until SIGTERM is deferred.
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                with core._live_processes_lock:
+                    if core._terminating:
+                        return
+                time.sleep(0.05)
+
+        core._spawn_gap_hook = gap_hook
+        # Signal hooks must be installed from the main thread before worker spawns.
+        core._install_orphan_hooks()
+
+        def worker():
+            core._spawn_detached(
+                [sys.executable, "-c", "import time; time.sleep(300)"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        time.sleep(60)
+        """
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_script],
+        cwd=str(tmp_path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    child_pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not ready.exists():
+            time.sleep(0.05)
+        assert ready.exists(), "parent never reached two-pending spawn gap"
+        child_pids = [int(line) for line in pids_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(child_pids) == 2
+        assert all(pid != parent.pid for pid in child_pids)
+
+        parent.send_signal(signal.SIGTERM)
+        parent.wait(timeout=20)
+
+        for pid in child_pids:
+            assert _wait_dead(pid, timeout=5), f"child {pid} survived dual-pending SIGTERM gap"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=2)
+        for pid in child_pids:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def test_spawn_rejected_after_signal_terminating_latch() -> None:
+    """After a termination signal, new spawns must be rejected by the process-global latch."""
+    assert hasattr(core, "_spawn_detached"), "shared spawn protocol missing"
+    saved = _reset_child_registry()
+    try:
+        with core._live_processes_lock:
+            core._terminating = True
+        with patch.object(core.subprocess, "Popen", side_effect=AssertionError("Popen must not run")):
+            try:
+                core._spawn_detached(
+                    [sys.executable, "-c", "pass"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+                raised = None
+            except OSError as exc:
+                raised = exc
+        assert raised is not None, "expected spawn rejection after terminating latch"
+        assert isinstance(raised, OSError)
+        assert "terminat" in str(raised).lower()
+    finally:
+        _restore_child_registry(*saved)
+
+
+def test_deferred_signal_is_redispatched_to_main_thread() -> None:
+    with patch.object(core.os, "kill") as kill:
+        core._redeliver_deferred_signal(signal.SIGINT, None)
+    kill.assert_called_once_with(os.getpid(), signal.SIGINT)
+
+
+def test_first_worker_spawn_fails_closed_before_popen() -> None:
+    saved = _reset_child_registry()
+    errors: list[BaseException] = []
+    try:
+        with (
+            patch.object(core.atexit, "register"),
+            patch.object(core.signal, "signal", side_effect=ValueError("main thread only")),
+            patch.object(core.subprocess, "Popen", side_effect=AssertionError("must not spawn")),
+        ):
+            worker = threading.Thread(
+                target=lambda: _capture_spawn_error(errors),
+            )
+            worker.start()
+            worker.join(timeout=2)
+        assert len(errors) == 1
+        assert isinstance(errors[0], OSError)
+        assert "main-thread" in str(errors[0])
+    finally:
+        _restore_child_registry(*saved)
+
+
+def _capture_spawn_error(errors: list[BaseException]) -> None:
+    try:
+        core._spawn_detached([sys.executable, "-c", "pass"])
+    except BaseException as exc:
+        errors.append(exc)

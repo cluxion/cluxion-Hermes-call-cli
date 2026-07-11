@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -65,18 +66,32 @@ class DeleteDecision:
 
 
 def create_job(*, jobs_root: Path = DEFAULT_JOBS_ROOT) -> Job:
-    """Create a marked sandbox job directory."""
+    """Create a marked sandbox job directory.
+
+    Tracks the exact UUID path created by this call. If marker write (or later
+    setup) fails, best-effort remove only that path without hiding the original
+    exception. Never touch a pre-existing/conflict path.
+    """
     job_id = str(uuid.uuid4())
     root = jobs_root.expanduser() / job_id
     work = root / "work"
-    work.mkdir(parents=True, exist_ok=False)
-    marker = {
-        "job_id": job_id,
-        "pid": os.getpid(),
-        "pid_create_time": time.time(),
-    }
-    (root / MARKER_FILE).write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
-    return Job(job_id=job_id, root=root, work=work)
+    created_here: Path | None = None
+    try:
+        root.mkdir(parents=True, exist_ok=False)
+        created_here = root
+        work.mkdir(exist_ok=False)
+        marker = {
+            "job_id": job_id,
+            "pid": os.getpid(),
+            "pid_create_time": time.time(),
+        }
+        (root / MARKER_FILE).write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+        return Job(job_id=job_id, root=root, work=work)
+    except BaseException:
+        if created_here is not None:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(created_here)
+        raise
 
 
 def delete_job_dir(job_dir: Path, *, jobs_root: Path = DEFAULT_JOBS_ROOT) -> DeleteDecision:

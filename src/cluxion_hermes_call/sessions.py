@@ -99,14 +99,14 @@ CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 def default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a Hermes session-management command."""
     from cluxion_hermes_call.core import (
-        _register_child,
+        _spawn_detached,
         _terminate_process_group,
         _termination_grace,
         _unregister_child,
     )
 
     timeout = _session_command_timeout()
-    process = subprocess.Popen(
+    process = _spawn_detached(
         command,
         text=True,
         encoding="utf-8",
@@ -114,9 +114,7 @@ def default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
-        start_new_session=True,
     )
-    _register_child(process.pid)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return subprocess.CompletedProcess(command, process.returncode or 0, stdout, stderr)
