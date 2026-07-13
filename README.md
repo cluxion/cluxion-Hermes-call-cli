@@ -30,7 +30,7 @@ codex plugin add clx-hermes-call@cluxion-local
 ```
 
 Claude Code에서는 같은 repo root의 `.claude-plugin/plugin.json`을 플러그인으로 설치하세요. 두 host 모두
-`commands/hermes-call.md`와 `skills/hermes-call/SKILL.md`를 발견하고, host가 직접 모델을 호출하지 않고
+`commands/hermes-call.md`와 `skills/clx-hermes-call/SKILL.md`를 발견하고, host가 직접 모델을 호출하지 않고
 `hermes-call --json ...` CLI 계약으로 위임합니다.
 
 ## 사용
@@ -146,7 +146,7 @@ codex plugin add clx-hermes-call@cluxion-local
 ```
 
 In Claude Code, install the same repo root from `.claude-plugin/plugin.json`. Both hosts discover
-`commands/hermes-call.md` and `skills/hermes-call/SKILL.md`; they delegate through the
+`commands/hermes-call.md` and `skills/clx-hermes-call/SKILL.md`; they delegate through the
 `hermes-call --json ...` CLI contract instead of owning model execution.
 
 ## Use

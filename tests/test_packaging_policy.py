@@ -21,7 +21,10 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
     assert claude["commands"] == "./commands"
     assert claude["skills"] == "./skills"
     assert Path("commands/hermes-call.md").is_file()
-    assert Path("skills/hermes-call/SKILL.md").is_file()
+    skill = Path("skills/clx-hermes-call/SKILL.md")
+    assert skill.is_file()
+    assert "name: clx-hermes-call" in skill.read_text(encoding="utf-8")
+    assert not Path("skills/hermes-call").exists()
 
 
 def test_no_legacy_surface_adapter_forks_exist() -> None:

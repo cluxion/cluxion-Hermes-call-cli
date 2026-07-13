@@ -1,5 +1,5 @@
 ---
-name: hermes-call
+name: clx-hermes-call
 description: Delegate work to Hermes through the installed hermes-call CLI when the user asks to use Hermes, /hermes-call, or a bounded external agent run.
 ---
 
